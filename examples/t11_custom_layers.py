@@ -23,11 +23,11 @@ layer = cv.Layer(p1=contacts_p1, p2=contacts_p2, beta=beta) # Create the new lay
 
 # Add this layer in and re-initialize the sim
 sim.people.contacts.add_layer(transport=layer)
-sim.reset_layer_pars() # Automatically add layer 'q' to the parameters using default values
+sim.reset_layer_pars() # Automatically add layer 'transport' to the parameters using default values
 sim.initialize() # Reinitialize
 sim.label = f'Transport layer with {n_contacts_per_person} contacts/person'
 
 # Run and compare
-if __name__ == '__main__':
-    msim = cv.parallel([orig_sim, sim])
-    msim.plot()
+# if __name__ == '__main__':
+#     msim = cv.parallel([orig_sim, sim])
+#     msim.plot()

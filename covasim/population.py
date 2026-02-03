@@ -5,6 +5,7 @@ Defines functions for making the population.
 #%% Imports
 import numpy as np # Needed for a few things not provided by pl
 import sciris as sc
+import networkx as nx
 from . import requirements as cvreq
 from . import utils as cvu
 from . import misc as cvm
@@ -18,7 +19,7 @@ from . import people as cvppl
 # Specify all externally visible functions this file defines
 __all__ = ['make_people', 'make_randpop', 'make_random_contacts',
            'make_microstructured_contacts', 'make_hybrid_contacts',
-           'make_synthpop']
+           'make_synthpop', 'make_scale_free_contacts']
 
 
 def make_people(sim, popdict=None, die=True, reset=False, recreate=False, verbose=None, **kwargs):
@@ -328,6 +329,48 @@ def make_microstructured_contacts(pop_size, cluster_size, mapping=None):
 
     return output
 
+# 新增
+def make_scale_free_contacts(pop_size, m_connections, mapping=None):
+    '''
+    生成无标度网络 (Barabási-Albert 模型)
+    
+    Args:
+        pop_size: 人口大小
+        m_connections: 每个人加入网络时连接的边数 (决定了网络的平均密度)
+        mapping: 真实的 ID 索引 (处理 indices 映射问题)
+    '''
+    # 1. 使用 NetworkX 生成 BA 无标度图
+    # 注意：BA 模型要求 pop_size >= m_connections
+    if pop_size <= m_connections:
+        # 如果人太少，退化为随机网络或全连接
+        return make_random_contacts(pop_size, m_connections)
+        
+    G = nx.barabasi_albert_graph(n=pop_size, m=m_connections)
+    
+    # 2. 提取所有的连线 (Edges)
+    # G.edges() 返回的是 [(0,1), (0,4), (1,3)...]
+    edges = np.array(list(G.edges()), dtype=cvd.default_int)
+    
+    if len(edges) == 0:
+        return {'p1': np.array([]), 'p2': np.array([]), 'beta': 1.0}
+
+    p1 = edges[:, 0]
+    p2 = edges[:, 1]
+    
+    # 3. 处理 ID 映射 (就像之前讲的“代号 vs 真名”)
+    if mapping is not None:
+        p1 = mapping[p1]
+        p2 = mapping[p2]
+        
+    # 4. 加上权重 (默认 beta=1.0)
+    # Covasim 的层通常需要 p1, p2, beta 这三个键
+    output = {
+        'p1': p1, 
+        'p2': p2, 
+        'beta': np.ones(len(p1), dtype=cvd.default_float)
+    }
+    
+    return output
 
 def make_hybrid_contacts(pop_size, ages, contacts, school_ages=None, work_ages=None):
     '''
