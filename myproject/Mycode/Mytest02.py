@@ -23,13 +23,13 @@ custom_config={
 countries_config = {}
 
 # 创建自定义人口
-custom_popdict, custom_keys = ContactNetwork.create_custom_population(1000, custom_config, countries_config)
+custom_popdict, custom_keys = ContactNetwork.create_custom_population(int(1000), custom_config, countries_config)
 
 # 创建自定义参数
 custom_pars = {
     # Population parameters
-    'pop_size': 1000,
-    'pop_infected': 10,
+    'pop_size': int(1000),  # 必须为整数，10e3 在 Python 里是 10000.0（float）
+    'pop_infected': 20,
 
     # Simulation parameters
     'start_day': '2021-07-04',
@@ -41,24 +41,40 @@ custom_pars = {
     # Network parameters  无变化
 
     # Basic disease transmission parameters
-    'beta_dist': {'dist': 'uniform', 'par1': 1.0, 'par2': 1.0},
-    'beta': 0.036,
-
-    # Parameters that control settings and defaults for multi-variant runs 无变化
-
-    # Parameters used to calculate immunity
-    
-    # 添加干预措施
-    # 'interventions': [tp, ct],  # 包含测试和接触者追踪
-    # 'interventions': [tp, ct, vx],  # 如果启用疫苗，使用这行替换上面那行
+    'beta': 0.026,
 }
 
-# 创建模拟
-sim = cv.Sim(pars=custom_pars)
-sim.popdict = custom_popdict
-sim.reset_layer_pars(force=True) 
-sim.initialize()
 
-sim.run()
-sim.save(f'E:/大论文相关/covasim/myproject/results/test.sim')
-sim.plot(to_plot=['cum_infections', 'new_infections', 'cum_deaths', 'n_infectious'])
+
+# 创建模拟
+sim_base = cv.Sim(pars=custom_pars)
+
+sim_base.popdict = custom_popdict
+sim_base.reset_layer_pars(force=True) 
+sim_base.initialize()
+
+sim_base.run()
+
+# sim_base.plot()
+G = sim_base.people.to_graph()
+print(G)
+
+# 画网络：感染者红色，其余白色（节点属性来自 people，如 naive=True 表示从未感染）
+node_colors = [
+    'red' if not G.nodes[n].get('naive', True) else 'white'
+    for n in G.nodes()
+]
+plt.figure(figsize=(10, 8))
+nx.draw(
+    G,
+    node_color=node_colors,
+    node_size=20,
+    edge_color='gray',
+    alpha=0.6,
+    with_labels=False,
+    pos=nx.spring_layout(G, seed=42, k=0.5),  # 布局可改为 nx.kamada_kawai_layout(G) 等
+)
+plt.title('Contact network: red=infected, white=naive')
+plt.axis('off')
+plt.tight_layout()
+plt.show()
