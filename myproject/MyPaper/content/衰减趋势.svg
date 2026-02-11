@@ -1,0 +1,56 @@
+<svg width="800" height="500" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .axis { stroke: #000; stroke-width: 2; }
+    .grid { stroke: #e0e0e0; stroke-width: 1; stroke-dasharray: 4,4; }
+    .curve { fill: none; stroke: #003366; stroke-width: 3; stroke-linecap: round; }
+    .label { font-family: 'Arial', sans-serif; font-size: 14px; fill: #333; }
+    .title { font-family: 'Arial', sans-serif; font-size: 18px; font-weight: bold; fill: #000; }
+    .annotation { font-family: 'Arial', sans-serif; font-size: 12px; fill: #666; font-style: italic; }
+    .dashed { stroke-dasharray: 5,5; stroke: #666; stroke-width: 1; }
+    .marker-line { stroke: #d9534f; stroke-width: 1.5; stroke-dasharray: 4,2; }
+  </style>
+
+  <rect x="0" y="0" width="800" height="500" fill="#ffffff" />
+
+  <line x1="80" y1="400" x2="750" y2="400" class="grid" />
+  <line x1="80" y1="320" x2="750" y2="320" class="grid" />
+  <line x1="80" y1="240" x2="750" y2="240" class="grid" />
+  <line x1="80" y1="160" x2="750" y2="160" class="grid" />
+  <line x1="80" y1="80" x2="750" y2="80" class="grid" />
+
+  <line x1="80" y1="400" x2="750" y2="400" class="axis" />
+  <text x="760" y="405" class="label" font-weight="bold">Time (t)</text>
+  
+  <line x1="80" y1="400" x2="80" y2="50" class="axis" />
+  <text x="30" y="40" class="label" font-weight="bold">NAb Level</text>
+
+  <path d="M 80 398 
+           L 120 80 
+           Q 220 300 450 340 
+           T 740 360" class="curve" />
+
+  <circle cx="80" cy="398" r="4" fill="#000" />
+  <text x="60" y="420" class="label">Event (t=0)</text>
+  <text x="60" y="435" class="annotation">(Infection/Vax)</text>
+
+  <circle cx="120" cy="80" r="4" fill="#d9534f" />
+  <line x1="120" y1="80" x2="80" y2="80" class="marker-line" />
+  <text x="130" y="80" class="label" fill="#d9534f" font-weight="bold">Peak NAb</text>
+  <text x="130" y="95" class="annotation">peak_nab = 2^X</text>
+
+  <path d="M 180 150 L 220 220" stroke="#666" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="230" y="200" class="label">Decay Phase</text>
+  <text x="230" y="215" class="annotation" font-family="monospace">nab += nab_kin[t] * peak</text>
+
+  <text x="600" y="340" class="label">Long-term Baseline</text>
+  <text x="600" y="355" class="annotation">Plateau / Slow waning</text>
+
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="0" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#666" />
+    </marker>
+  </defs>
+
+  <text x="400" y="30" text-anchor="middle" class="title">Neutralizing Antibody (NAb) Kinetics Model</text>
+
+</svg>
