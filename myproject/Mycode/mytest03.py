@@ -75,4 +75,8 @@ if __name__ == '__main__':
         msims.append(msim)
 
     merged = cv.MultiSim.merge(msims, base=True)
+    # .msim 用 save()：保存为 pickle，供 cv.MultiSim.load() 读取
+    merged.save(f'E:\\大论文相关\\covasim\\myproject\\results\\单区域网络图片\\beta.msim')
+    # Excel 必须用 to_excel()；save('.xlsx') 会误写成 pickle，Excel 打不开
+    merged.to_excel(f'E:\\大论文相关\\covasim\\myproject\\results\\单区域网络图片\\beta.xlsx')
     merged.plot(color_by_sim=True)
