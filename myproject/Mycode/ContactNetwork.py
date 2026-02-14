@@ -8,23 +8,27 @@ import networkx as nx
 
 def validate_countries_config(countries_config):
     '''
-    校验国家配置字典
-    
+    校验国家配置字典，支持两种写法：
+
+    1) 比例式（推荐）：值为正整数之比，自动归一化为概率
+       例如：{'A': 2, 'B': 1} 表示 A:B = 2:1，即 A 占 2/3，B 占 1/3
+
+    2) 概率式：各值之和必须为 1.0
+       例如：{'A': 0.6, 'B': 0.4} 表示 A 占 60%，B 占 40%
+
     Args:
         countries_config: 国家配置字典，格式为：
             {
-                'country_name': proportion,  # 国家名: 占总人口的比例（小数）
+                'country_name': proportion_or_ratio,  # 比例式如 2、1 或概率如 0.6、0.4
                 ...
             }
-            例如：{'A': 0.6, 'B': 0.4} 表示 A 占60%，B 占40%
-            注意：所有比例之和必须等于1.0
-    
+
     Returns:
-        tuple: (country_names, proportions) - 国家名列表和比例列表
-    
+        tuple: (country_names, proportions) - 国家名列表和归一化后的比例列表（和为 1.0）
+
     Raises:
         TypeError: 如果 countries_config 不是字典类型，或比例不是数值类型
-        ValueError: 如果 countries_config 为空，或比例为负数，或比例总和不等于1.0
+        ValueError: 如果 countries_config 为空，或比例为负数，或概率式总和不等于 1.0
     '''
     # 校验是否为字典类型
     if not isinstance(countries_config, dict):
@@ -38,36 +42,30 @@ def validate_countries_config(countries_config):
     
     # 提取国家名和比例
     country_names = list(countries_config.keys())
-    proportions = list(countries_config.values())
+    proportions = np.array([float(v) for v in countries_config.values()])
     
-    # 校验比例是否为数值类型
+    # 校验比例是否为数值类型且非负
     for country, prop in countries_config.items():
         if not isinstance(prop, (int, float)):
             raise TypeError(f"国家 '{country}' 的比例必须是数值类型，当前类型: {type(prop)}")
         if prop < 0:
             raise ValueError(f"国家 '{country}' 的比例不能为负数: {prop}")
     
-    # 计算比例总和
-    total_proportion = sum(proportions)
+    total = float(np.sum(proportions))
+    if total <= 0:
+        raise ValueError(
+            f"countries_config 中所有比例之和必须大于 0，当前总和: {total}\n"
+            f"当前配置: {countries_config}"
+        )
     
-    # 校验比例总和是否等于1
-    if abs(total_proportion - 1.0) > 1e-6:  # 使用小的容差来处理浮点数精度问题
-        if total_proportion > 1.0:
-            raise ValueError(
-                f"countries_config 中所有比例之和 ({total_proportion:.6f}) 大于 1.0！\n"
-                f"当前配置: {countries_config}\n"
-                f"请调整比例使其总和等于 1.0"
-            )
-        else:
-            raise ValueError(
-                f"countries_config 中所有比例之和 ({total_proportion:.6f}) 小于 1.0！\n"
-                f"当前配置: {countries_config}\n"
-                f"请调整比例使其总和等于 1.0"
-            )
+    # 若总和不为 1.0，视为比例式（如 2:1），归一化为概率
+    if abs(total - 1.0) > 1e-6:
+        proportions = proportions / total
+    proportions = proportions.tolist()
     
     return country_names, proportions
 
-def create_custom_population(pop_size, layer_config, countries_config):
+def create_custom_population(pop_size, layer_config, countries_config, seed=None):
     '''
     创建完全自定义的人口
     
@@ -82,14 +80,12 @@ def create_custom_population(pop_size, layer_config, countries_config):
                     'cluster_size': 如果是聚类结构，指定聚类大小；否则为 None
                 }
             }
-        countries_config: 国家配置字典，格式为：
-            {
-                'country_name': proportion,  # 国家名: 占总人口的比例（小数）
-                ...
-            }
-            例如：{'A': 0.6, 'B': 0.4} 表示 A 占60%，B 占40%
-            注意：所有比例之和必须等于1.0
+        countries_config: 国家配置字典。支持比例式如 {'A': 2, 'B': 1}（A:B=2:1）
+            或概率式如 {'A': 0.6, 'B': 0.4}（总和须为 1.0），详见 validate_countries_config
+        seed: 可选，人口与区内接触网生成的随机种子；为 None 时不固定
     '''
+    if seed is not None:
+        np.random.seed(seed)
     # 校验 countries_config 并获取国家名和比例列表
     country_names, proportions = validate_countries_config(countries_config)
     

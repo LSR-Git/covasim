@@ -94,7 +94,22 @@ def make_people(sim, popdict=None, die=True, reset=False, recreate=False, verbos
         people = popdict
         people.set_pars(sim.pars)
     else:
-        people = cvppl.People(sim.pars, uid=popdict['uid'], age=popdict['age'], sex=popdict['sex'], contacts=popdict['contacts']) # List for storing the people
+        # Build kwargs: required keys plus any custom per-person attributes from popdict
+        kwargs = dict(
+            uid=popdict['uid'],
+            age=popdict['age'],
+            sex=popdict['sex'],
+            contacts=popdict['contacts'],
+        )
+        skip_keys = {'uid', 'age', 'sex', 'contacts', 'layer_keys'}
+        for key in popdict.keys():
+            if key in skip_keys:
+                continue
+            val = popdict[key]
+            if hasattr(val, '__len__') and len(val) == pop_size:
+                kwargs[key] = val
+        # Use strict=False so custom attributes (e.g. country) are stored and appear in people.keys()
+        people = cvppl.People(sim.pars, strict=False, **kwargs)
 
     sc.printv(f'Created {pop_size} people, average age {people.age.mean():0.2f} years', 2, verbose)
 

@@ -3,9 +3,16 @@ import covasim as cv
 import Enums
 import sciris as sc
 import os
+import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
 import ContactNetwork
+import CrossNetwork
+import MyPlot
+
+# 设置 matplotlib 显示中文（Windows 常用 SimHei / 微软雅黑）
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'KaiTi', 'FangSong', 'sans-serif']
+matplotlib.rcParams['axes.unicode_minus'] = False  # 解决负号显示为方框
 
 # 定义层级配置
 custom_config={
@@ -19,57 +26,21 @@ custom_config={
 
 }
 
-# 定义国家配置 不配置默认为一个国家
+# 定义国家配置：比例式 2:1 表示 A 占 2/3、B 占 1/3（也可写概率式如 {'A': 0.5, 'B': 0.5}）
 countries_config = {
-    'A': 0.5,
-    'B': 0.5
+    'A': 2,
+    'B': 1
 }
 
-# 跨区层参数（方式二：仅流动人口有跨区边）
-frac_travelers = 0.08       # 每区流动人口比例
-n_cross_per_person = 2      # 每个流动者在本层的跨区边数
-cross_beta = 0.6            # 跨区边的传播权重（相对区内可略低）
-cross_layer_seed = 42       # 随机种子，便于复现
+# 随机种子：可分别指定，便于复现或做敏感性分析
+seed_population = 0      # 人口与区内接触网（create_custom_population）
+seed_cross_layer = 42    # 跨区层（流动者选取与跨区边）
 
 # 创建自定义人口（pop_size 须与下方 custom_pars['pop_size'] 一致）
-pop_size = 10000
-custom_popdict, custom_keys = ContactNetwork.create_custom_population(pop_size, custom_config, countries_config)
-
-# 添加跨区接触层（仅当存在 A、B 两区时）
-countries = custom_popdict['country']
-unique_countries = np.unique(countries)
-if len(unique_countries) >= 2:
-    rng = np.random.RandomState(cross_layer_seed)
-    inds_A = np.where(countries == 'A')[0]
-    inds_B = np.where(countries == 'B')[0]
-    if len(inds_A) > 0 and len(inds_B) > 0:
-        n_travelers_A = max(1, int(frac_travelers * len(inds_A)))
-        n_travelers_B = max(1, int(frac_travelers * len(inds_B)))
-        travelers_A = rng.choice(inds_A, size=n_travelers_A, replace=False)
-        travelers_B = rng.choice(inds_B, size=n_travelers_B, replace=False)
-
-        p1_cross_list = []
-        p2_cross_list = []
-        for a in travelers_A:
-            partners = rng.choice(inds_B, size=n_cross_per_person, replace=True)
-            for b in partners:
-                p1_cross_list.append(a)
-                p2_cross_list.append(b)
-        for b in travelers_B:
-            partners = rng.choice(inds_A, size=n_cross_per_person, replace=True)
-            for a in partners:
-                p1_cross_list.append(b)
-                p2_cross_list.append(a)
-
-        p1_cross = np.array(p1_cross_list, dtype=cv.default_int)
-        p2_cross = np.array(p2_cross_list, dtype=cv.default_int)
-        n_cross = len(p1_cross)
-        beta_cross = np.full(n_cross, cross_beta, dtype=cv.default_float)
-
-        cross_layer = cv.Layer(p1=p1_cross, p2=p2_cross, beta=beta_cross, label='cross')
-        custom_popdict['contacts'].add_layer(cross=cross_layer)
-        custom_popdict['layer_keys'].append('cross')
-        custom_keys = list(custom_popdict['layer_keys'])
+pop_size = 30000
+popdict_base, custom_keys = ContactNetwork.create_custom_population(
+    pop_size, custom_config, countries_config, seed=seed_population
+)
 
 # 创建自定义参数（pop_size 须与上面 create_custom_population 的 pop_size 一致）
 custom_pars = {
@@ -90,14 +61,39 @@ custom_pars = {
     'beta': 0.036,
 }
 
-# 创建模拟
-sim_base = cv.Sim(pars=custom_pars)
+# 三个 sim：仅 frac_travelers 不同（0.01, 0.03, 0.06），共用一个基础人口再分别加跨区层
+frac_travelers_list = [0.01, 0.03, 0.06]
+sims = []
+for ft in frac_travelers_list:
+    popdict_copy = sc.dcp(popdict_base)
+    popdict_copy = CrossNetwork.add_cross_layer(
+        popdict_copy,
+        frac_travelers=ft,
+        n_cross_per_person=2,
+        cross_beta=0.6,
+        cross_layer_seed=seed_cross_layer,
+    )
+    sim = cv.Sim(pars=custom_pars, label=f'流动比例 {ft*100:.0f}%')
+    sim.popdict = popdict_copy
+    sim.reset_layer_pars(force=True)
+    sim.initialize()
+    sim.run()
+    sims.append(sim)
 
-sim_base.popdict = custom_popdict
-sim_base.reset_layer_pars(force=True) 
-sim_base.initialize()
+# 保存完整模拟结果到「跨境传播敏感性」目录，下次可用 cv.MultiSim.load(...) 加载后直接画图
+results_dir = os.path.join(os.path.dirname(__file__), '..', 'results', '双耦合网络图片', '跨境传播敏感性')
+os.makedirs(results_dir, exist_ok=True)
+msim = cv.MultiSim(sims)
+msim.save(os.path.join(results_dir, '跨境传播敏感性.msim'))
 
-sim_base.run()
-sim_base.people.to_graph()
-print(sim_base.layer_keys())
-# sim_base.plot()
+# 绘制三个 sim 的累计感染人数
+fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+for sim in msim.sims:
+    ax.plot(sim.results['t'], sim.results['cum_infections'].values, label=sim.label)
+ax.set_xlabel('天数')
+ax.set_ylabel('累计感染人数')
+ax.set_title('不同流动人口比例下累计感染人数对比')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()

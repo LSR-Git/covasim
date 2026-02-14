@@ -1146,8 +1146,17 @@ class BasePeople(FlexPretty):
 
 
     def keys(self):
-        ''' Returns keys for all properties of the people object '''
-        return self.meta.all_states[:]
+        ''' Returns keys for all properties of the people object (including custom per-person attributes e.g. country). '''
+        base = self.meta.all_states[:]
+        try:
+            n = len(self)
+        except Exception:
+            n = 0
+        # Include custom attributes from __dict__ that are per-person arrays (e.g. country, crosser)
+        base_set = set(base)
+        custom = [k for k in self.__dict__ if not k.startswith('_') and k not in base_set
+                  and hasattr(self.__dict__[k], '__len__') and len(self.__dict__[k]) == n]
+        return base + sorted(custom)
 
 
     def person_keys(self):
