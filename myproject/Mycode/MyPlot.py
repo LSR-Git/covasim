@@ -5,6 +5,12 @@ import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
 
+try:
+    import covasim as cv
+    _has_covasim = True
+except ImportError:
+    _has_covasim = False
+
 
 def plot_contact_network(G, layers=None, size=None, figsize=(10, 8), layout='spring', seed=None, **draw_kwargs):
     """
@@ -201,6 +207,178 @@ def plot_two_country_networks(G, sample_size=50, seed=1, figsize=(14, 7), offset
     print(f"A nodes after adding neighbors: {len(expand_A)}")
     print(f"B sampled nodes: {len(sampled_B)}")
     print(f"B nodes after adding neighbors: {len(expand_B)}")
+
+
+# ---------------------------------------------------------------------------
+# 按 Country 属性记录两区域疫情，并绘制 2x2 四图（A 左/右、B 左/右）
+# ---------------------------------------------------------------------------
+
+if _has_covasim:
+    class CountryRegionAnalyzer(cv.Analyzer):
+        '''
+        按人员的 country 属性每日记录各区域的 S/E/I/R/D 及病程状态，供 plot_two_country_epidemic_curves 使用。
+        需在 Sim 的 analyzers 中加入本分析器并运行后，再调用绘图函数。
+        '''
+        def __init__(self, country_key='country', regions=('A', 'B'), label='CountryRegionAnalyzer'):
+            super().__init__(label=label)
+            self.country_key = country_key
+            self.regions = list(regions)
+            self.region_data = None
+
+        def initialize(self, sim=None):
+            super().initialize(sim)
+            if sim is None:
+                return
+            n_pts = int(sim.npts)
+            self.region_data = {}
+            keys_stock = ['n_susceptible', 'n_exposed', 'n_infectious', 'n_recovered', 'n_dead', 'cum_infections']
+            keys_severity = ['n_asymptomatic', 'n_presymptomatic', 'n_mild', 'n_severe', 'n_critical', 'n_recovered', 'n_dead']
+            for r in self.regions:
+                self.region_data[r] = {
+                    't': np.arange(n_pts, dtype=float),
+                    **{k: np.zeros(n_pts, dtype=float) for k in keys_stock},
+                    **{k: np.zeros(n_pts, dtype=float) for k in keys_severity},
+                }
+            return
+
+        def apply(self, sim):
+            if self.region_data is None:
+                return
+            people = sim.people
+            if not hasattr(people, self.country_key) and self.country_key not in people.keys():
+                return
+            try:
+                country_arr = people[self.country_key]
+            except Exception:
+                return
+            t = int(sim.t)
+            if t < 0 or t >= len(self.region_data[self.regions[0]]['t']):
+                return
+            for region in self.regions:
+                inds = (country_arr == region)
+                if not np.any(inds):
+                    continue
+                p = people
+                # 库存量
+                self.region_data[region]['n_susceptible'][t] = np.count_nonzero(p.susceptible[inds])
+                self.region_data[region]['n_exposed'][t] = np.count_nonzero(p.exposed[inds])
+                self.region_data[region]['n_infectious'][t] = np.count_nonzero(p.infectious[inds])
+                self.region_data[region]['n_recovered'][t] = np.count_nonzero(p.recovered[inds])
+                self.region_data[region]['n_dead'][t] = np.count_nonzero(p.dead[inds])
+                self.region_data[region]['cum_infections'][t] = (
+                    self.region_data[region]['n_exposed'][t]
+                    + self.region_data[region]['n_infectious'][t]
+                    + self.region_data[region]['n_recovered'][t]
+                    + self.region_data[region]['n_dead'][t]
+                )
+                # 病程：无症状=传染期且未症状，症状前=暴露且未到传染日，轻症=症状且非重/危，重/危
+                exp_inds = inds.copy()
+                inf_inds = inds & p.infectious
+                sym_inds = inds & p.symptomatic
+                sev_inds = inds & p.severe
+                crit_inds = inds & p.critical
+                rec_inds = inds & p.recovered
+                dead_inds = inds & p.dead
+                # 传染但未症状（含无症状与症状前中尚未发病）
+                asym_inds = inf_inds & ~p.symptomatic
+                # 暴露但尚未传染（症状前）
+                pre_inds = inds & p.exposed & ~p.infectious
+                # 轻症：有症状且非重、非危
+                mild_inds = sym_inds & ~p.severe & ~p.critical
+                self.region_data[region]['n_asymptomatic'][t] = np.count_nonzero(asym_inds)
+                self.region_data[region]['n_presymptomatic'][t] = np.count_nonzero(pre_inds)
+                self.region_data[region]['n_mild'][t] = np.count_nonzero(mild_inds)
+                self.region_data[region]['n_severe'][t] = np.count_nonzero(sev_inds)
+                self.region_data[region]['n_critical'][t] = np.count_nonzero(crit_inds)
+                self.region_data[region]['n_recovered'][t] = np.count_nonzero(rec_inds)  # 与上重复键，覆盖
+                self.region_data[region]['n_dead'][t] = np.count_nonzero(dead_inds)
+            return
+
+
+def plot_two_country_epidemic_curves(
+    sim,
+    country_key='country',
+    regions=('A', 'B'),
+    analyzer_label='CountryRegionAnalyzer',
+    figsize=(12, 10),
+    fontsize=10,
+    save_path=None,
+):
+    '''
+    在同一张图中画 2x2 四子图：左上 A 区 S/E/I(cum)/R/D，右上 A 区各病程，左下 B 区 S/E/I(cum)/R/D，右下 B 区各病程。
+    需要 sim 在运行前加入 CountryRegionAnalyzer 并已 run，例如：
+        sim = cv.Sim(..., analyzers=[MyPlot.CountryRegionAnalyzer()])
+        sim.run()
+        MyPlot.plot_two_country_epidemic_curves(sim)
+    save_path: 可选，若提供则先将图片保存到该路径再 show。
+    '''
+    if not _has_covasim:
+        raise RuntimeError('plot_two_country_epidemic_curves requires covasim')
+    # 确保中文与负号正常显示
+    plt.rcParams.setdefault('font.sans-serif', ['SimHei', 'Microsoft YaHei', 'SimSun', 'sans-serif'])
+    plt.rcParams.setdefault('axes.unicode_minus', False)
+    try:
+        analyzer = sim.get_analyzer(analyzer_label)
+    except Exception:
+        raise ValueError(
+            'Sim 未找到 CountryRegionAnalyzer。请先加入 analyzers=[CountryRegionAnalyzer()] 并运行 sim.run()。'
+        ) from None
+    data = getattr(analyzer, 'region_data', None)
+    if not data or list(regions) != list(analyzer.regions):
+        raise ValueError('Analyzer 中无 region_data 或 regions 与绘图不一致')
+    A, B = regions[0], regions[1]
+    t_a = data[A]['t']
+    t_b = data[B]['t']
+
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+    ax_a_seir = axes[0, 0]   # 左上：A 区 S,E,I(cum),R,D
+    ax_a_sev = axes[0, 1]    # 右上：A 区 各病程
+    ax_b_seir = axes[1, 0]   # 左下：B 区 S,E,I(cum),R,D
+    ax_b_sev = axes[1, 1]    # 右下：B 区 各病程
+
+    # 颜色与图例（参考常见 SEIR 与病程图）
+    colors_seir = dict(S='#808080', E='#ffcc00', I='#e45226', R='#4dac26', D='#000000')
+    colors_sev = dict(
+        Asymptomatic='#e996c6', Presymptomatic='#87ceeb', Mild='#e67e50', Severe='#8b0000',
+        Critical='#4169e1', R='#4dac26', D='#000000'
+    )
+
+    def _plot_seir(ax, t, d, title, region_label):
+        ax.plot(t, d['n_susceptible'], color=colors_seir['S'], label='S 易感者', marker='o', markersize=2)
+        ax.plot(t, d['n_exposed'], color=colors_seir['E'], label='E 暴露者', marker='o', markersize=2)
+        ax.plot(t, d['cum_infections'], color=colors_seir['I'], label='I 累计感染者', marker='o', markersize=2)
+        ax.plot(t, d['n_recovered'], color=colors_seir['R'], label='R 恢复者', marker='o', markersize=2)
+        ax.plot(t, d['n_dead'], color=colors_seir['D'], label='D 死亡者', marker='o', markersize=2)
+        ax.set_xlabel('时间 (天)', fontsize=fontsize)
+        ax.set_ylabel('人员数量', fontsize=fontsize)
+        ax.set_title(title, fontsize=fontsize)
+        ax.legend(loc='upper left', fontsize=fontsize - 1)
+        ax.grid(True, alpha=0.3)
+
+    def _plot_severity(ax, t, d, title):
+        ax.plot(t, d['n_asymptomatic'], color=colors_sev['Asymptomatic'], label='无症状', marker='o', markersize=2)
+        ax.plot(t, d['n_presymptomatic'], color=colors_sev['Presymptomatic'], label='症状前', marker='o', markersize=2)
+        ax.plot(t, d['n_mild'], color=colors_sev['Mild'], label='轻症', marker='o', markersize=2)
+        ax.plot(t, d['n_severe'], color=colors_sev['Severe'], label='重症', marker='o', markersize=2)
+        ax.plot(t, d['n_critical'], color=colors_sev['Critical'], label='危重症', marker='o', markersize=2)
+        ax.plot(t, d['n_recovered'], color=colors_sev['R'], label='R 恢复者', marker='o', markersize=2)
+        ax.plot(t, d['n_dead'], color=colors_sev['D'], label='D 死亡者', marker='o', markersize=2)
+        ax.set_xlabel('时间 (天)', fontsize=fontsize)
+        ax.set_ylabel('人员数量', fontsize=fontsize)
+        ax.set_title(title, fontsize=fontsize)
+        ax.legend(loc='upper left', fontsize=fontsize - 1)
+        ax.grid(True, alpha=0.3)
+
+    _plot_seir(ax_a_seir, t_a, data[A], f'({regions[0]}) 每日累计感染者情况', f'区域 {A}')
+    _plot_severity(ax_a_sev, t_a, data[A], f'({regions[0]}) 每日累计各病程感染者情况')
+    _plot_seir(ax_b_seir, t_b, data[B], f'({regions[1]}) 每日累计感染者情况', f'区域 {B}')
+    _plot_severity(ax_b_sev, t_b, data[B], f'({regions[1]}) 每日累计各病程感染者情况')
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.show()
+    return fig
 
 
 if __name__ == '__main__':
