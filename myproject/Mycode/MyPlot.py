@@ -352,6 +352,7 @@ def plot_two_country_epidemic_curves(
         ax.set_xlabel('时间 (天)', fontsize=fontsize)
         ax.set_ylabel('人员数量', fontsize=fontsize)
         ax.set_title(title, fontsize=fontsize)
+        ax.set_ylim(bottom=0)
         ax.legend(loc='upper left', fontsize=fontsize - 1)
         ax.grid(True, alpha=0.3)
 
@@ -366,6 +367,7 @@ def plot_two_country_epidemic_curves(
         ax.set_xlabel('时间 (天)', fontsize=fontsize)
         ax.set_ylabel('人员数量', fontsize=fontsize)
         ax.set_title(title, fontsize=fontsize)
+        ax.set_ylim(bottom=0)
         ax.legend(loc='upper left', fontsize=fontsize - 1)
         ax.grid(True, alpha=0.3)
 

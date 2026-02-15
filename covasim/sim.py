@@ -214,11 +214,15 @@ class Sim(cvb.BaseSim):
                 self['pop_size'] = int(scaled_pop/pop_scale)
 
         # Handle types
-        for key in ['pop_size', 'pop_infected']:
+        self['pop_size'] = int(self['pop_size'])
+        if isinstance(self['pop_infected'], dict):
+            # Per-region initial infections: leave as dict; validated when pop_infected_region_key is set
+            pass
+        else:
             try:
-                self[key] = int(self[key])
+                self['pop_infected'] = int(self['pop_infected'])
             except Exception as E:
-                errormsg = f'Could not convert {key}={self[key]} of {type(self[key])} to integer'
+                errormsg = f'Could not convert pop_infected={self["pop_infected"]} of {type(self["pop_infected"])} to integer'
                 raise ValueError(errormsg) from E
 
         # Handle start day
@@ -522,8 +526,19 @@ class Sim(cvb.BaseSim):
                 self.people.make_nonnaive(inds=inds)
 
             # Create the seed infections
-            if self['pop_infected']:
-                inds = cvu.choose(self['pop_size'], self['pop_infected'])
+            if self['pop_infected_region_key'] and isinstance(self['pop_infected'], dict):
+                # Per-region initial infections: pop_infected e.g. {'A': 10, 'B': 10}, pop_infected_region_key e.g. 'country'
+                all_inds = []
+                for region, n in self['pop_infected'].items():
+                    region_inds = np.where(self.people[self['pop_infected_region_key']] == region)[0]
+                    n_actual = min(int(n), len(region_inds))
+                    if n_actual > 0:
+                        chosen = cvu.choose(len(region_inds), n_actual)
+                        all_inds.extend(region_inds[chosen].tolist())
+                if all_inds:
+                    self.people.infect(inds=np.array(all_inds, dtype=cvd.default_int), layer='seed_infection')
+            elif self['pop_infected']:
+                inds = cvu.choose(self['pop_size'], int(self['pop_infected']))
                 self.people.infect(inds=inds, layer='seed_infection') # Not counted by results since flows are re-initialized during the step
 
         elif verbose:
@@ -784,7 +799,8 @@ class Sim(cvb.BaseSim):
             for variant in range(self['n_variants']):
                 self.results['variant'][f'cum_{key}'][variant, :] = np.cumsum(self.results['variant'][f'new_{key}'][variant, :], axis=0)
         for res in [self.results['cum_infections'], self.results['variant']['cum_infections_by_variant']]: # Include initially infected people
-            res.values += self['pop_infected']*self.rescale_vec[0]
+            n_seed = sum(self['pop_infected'].values()) if isinstance(self['pop_infected'], dict) else self['pop_infected']
+            res.values += n_seed*self.rescale_vec[0]
 
         # Finalize interventions and analyzers
         self.finalize_interventions()

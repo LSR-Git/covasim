@@ -45,7 +45,8 @@ popdict_base, custom_keys = ContactNetwork.create_custom_population(
 custom_pars = {
     # Population parameters
     'pop_size': pop_size,
-    'pop_infected': 20,
+    'pop_infected': {'A':0, 'B': 20},
+    'pop_infected_region_key': 'country',
 
     # Simulation parameters
     'start_day': '2021-07-04',
@@ -61,8 +62,9 @@ custom_pars = {
 }
 
 # 无跨区层时 A/B 两区不接触；加上跨区层后可观察跨境传播
+# frac_travelers 为每区流动人口比例 (0~1)，0.01 表示每区 1% 为流动者，总跨区人数约等于总人口的 1%
 popdict = CrossNetwork.add_cross_layer(
-    popdict_base, frac_travelers=0.03, n_cross_per_person=2, cross_beta=0.6, cross_layer_seed=seed_cross_layer
+    popdict_base, frac_travelers=0.01, n_cross_per_person=10, cross_beta=0.6, cross_layer_seed=seed_cross_layer
 )
 
 sim = cv.Sim(
@@ -78,11 +80,11 @@ sim.run()
 # 保存模拟结果与图片到指定目录
 results_dir = r'E:\大论文相关\covasim\myproject\results\双耦合网络图片\无干预模拟'
 os.makedirs(results_dir, exist_ok=True)
-sim.save(os.path.join(results_dir, 'no_intervention.sim'))
+sim.save(os.path.join(results_dir, 'cross_1%.sim'))
 
 # 按 A/B 两区域分别绘制：左上/右上为 A 区 SEIR+病程，左下/右下为 B 区，并保存图片
 MyPlot.plot_two_country_epidemic_curves(
     sim, country_key='country', regions=('A', 'B'),
-    save_path=os.path.join(results_dir, '两区域疫情曲线.png'),
+    save_path=os.path.join(results_dir, '两区域疫情曲线_1%.png'),
 )
 
