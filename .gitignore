@@ -1,10 +1,7 @@
 # Data files
 data/epi_data
 
-# myproject: 只跟踪 Mycode，其余全部排除
-myproject/*
-!myproject/Mycode/
-!myproject/Mycode/**
+
 
 # Other files
 .idea

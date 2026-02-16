@@ -303,18 +303,19 @@ def plot_two_country_epidemic_curves(
     figsize=(12, 10),
     fontsize=10,
     save_path=None,
+    show_severity=True,
+    show_regions=None,
 ):
     '''
-    在同一张图中画 2x2 四子图：左上 A 区 S/E/I(cum)/R/D，右上 A 区各病程，左下 B 区 S/E/I(cum)/R/D，右下 B 区各病程。
-    需要 sim 在运行前加入 CountryRegionAnalyzer 并已 run，例如：
-        sim = cv.Sim(..., analyzers=[MyPlot.CountryRegionAnalyzer()])
-        sim.run()
-        MyPlot.plot_two_country_epidemic_curves(sim)
+    按区域画 A/B 两区疫情曲线。
+    - show_severity=True（默认）：含右列各病程图；False 则仅左列 S/E/I(cum)/R/D。
+    - show_regions=None（默认）：两区都画。'A' 或 ('A',) 只画 A 区；'B' 或 ('B',) 只画 B 区。
+      只画 A 区且 show_severity=False 时，即仅显示 A 区左上角那一幅 SEIR 图（1×1）。
+    需要 sim 在运行前加入 CountryRegionAnalyzer 并已 run。
     save_path: 可选，若提供则先将图片保存到该路径再 show。
     '''
     if not _has_covasim:
         raise RuntimeError('plot_two_country_epidemic_curves requires covasim')
-    # 确保中文与负号正常显示
     plt.rcParams.setdefault('font.sans-serif', ['SimHei', 'Microsoft YaHei', 'SimSun', 'sans-serif'])
     plt.rcParams.setdefault('axes.unicode_minus', False)
     try:
@@ -327,16 +328,40 @@ def plot_two_country_epidemic_curves(
     if not data or list(regions) != list(analyzer.regions):
         raise ValueError('Analyzer 中无 region_data 或 regions 与绘图不一致')
     A, B = regions[0], regions[1]
-    t_a = data[A]['t']
-    t_b = data[B]['t']
+    # 要显示的区：None/'both'→两区，'A'→仅A，'B'→仅B
+    if show_regions is None or show_regions == 'both' or show_regions == ('A', 'B'):
+        to_show = [A, B]
+    elif show_regions == 'A' or show_regions == (A,):
+        to_show = [A]
+    elif show_regions == 'B' or show_regions == (B,):
+        to_show = [B]
+    else:
+        to_show = list(show_regions)
 
-    fig, axes = plt.subplots(2, 2, figsize=figsize)
-    ax_a_seir = axes[0, 0]   # 左上：A 区 S,E,I(cum),R,D
-    ax_a_sev = axes[0, 1]    # 右上：A 区 各病程
-    ax_b_seir = axes[1, 0]   # 左下：B 区 S,E,I(cum),R,D
-    ax_b_sev = axes[1, 1]    # 右下：B 区 各病程
+    n_rows = len(to_show)
+    n_cols = 2 if (show_severity and n_rows > 0) else 1
+    w, h = (figsize[0], figsize[1]) if isinstance(figsize, (tuple, list)) and len(figsize) >= 2 else (12, 10)
+    if n_rows == 1 and n_cols == 1:
+        fig, axes = plt.subplots(1, 1, figsize=(w * 0.5, h * 0.5))
+        axes = np.array([[axes]])
+    elif n_rows == 1 and n_cols == 2:
+        fig, axes = plt.subplots(1, 2, figsize=(w, h * 0.5))
+        axes = axes.reshape(1, -1)
+    elif n_rows == 2 and n_cols == 1:
+        # 两区、不画病程：左右排列（左 A 区 SEIR，右 B 区 SEIR）
+        fig, axes = plt.subplots(1, 2, figsize=(w, h * 0.5))
+        axes = axes.reshape(1, -1)
+    else:
+        fig, axes = plt.subplots(2, 2, figsize=figsize)
 
-    # 颜色与图例（参考常见 SEIR 与病程图）
+    def _get_ax(row, col):
+        if n_rows == 1 and n_cols == 1:
+            return axes[0, 0]
+        # 两区、不画病程时是 1×2 左右排列，SEIR 用 (0, i)
+        if n_rows == 2 and n_cols == 1:
+            return axes[0, row]
+        return axes[row, col]
+
     colors_seir = dict(S='#808080', E='#ffcc00', I='#e45226', R='#4dac26', D='#000000')
     colors_sev = dict(
         Asymptomatic='#e996c6', Presymptomatic='#87ceeb', Mild='#e67e50', Severe='#8b0000',
@@ -371,10 +396,11 @@ def plot_two_country_epidemic_curves(
         ax.legend(loc='upper left', fontsize=fontsize - 1)
         ax.grid(True, alpha=0.3)
 
-    _plot_seir(ax_a_seir, t_a, data[A], f'({regions[0]}) 每日累计感染者情况', f'区域 {A}')
-    _plot_severity(ax_a_sev, t_a, data[A], f'({regions[0]}) 每日累计各病程感染者情况')
-    _plot_seir(ax_b_seir, t_b, data[B], f'({regions[1]}) 每日累计感染者情况', f'区域 {B}')
-    _plot_severity(ax_b_sev, t_b, data[B], f'({regions[1]}) 每日累计各病程感染者情况')
+    for i, reg in enumerate(to_show):
+        t = data[reg]['t']
+        _plot_seir(_get_ax(i, 0), t, data[reg], f'({reg}) 每日累计感染者情况', f'区域 {reg}')
+        if show_severity and n_cols >= 2:
+            _plot_severity(_get_ax(i, 1), t, data[reg], f'({reg}) 每日累计各病程感染者情况')
 
     plt.tight_layout()
     if save_path:

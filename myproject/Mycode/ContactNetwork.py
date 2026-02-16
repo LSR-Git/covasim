@@ -97,7 +97,9 @@ def create_custom_population(pop_size, layer_config, countries_config, seed=None
     # 根据 countries_config 生成 countries 数组
     # 使用 np.random.choice 根据比例随机分配
     countries = np.random.choice(country_names, size=pop_size, p=proportions)
-    
+    # 初始时 position = country，便于跨境时区分（流动者 position 可单独更新）
+    positions = np.array(countries, dtype=object)
+
     # 创建接触网络
     contacts = cv.Contacts()
     layer_keys = []
@@ -206,6 +208,7 @@ def create_custom_population(pop_size, layer_config, countries_config, seed=None
 
         # 添加自定义属性（如果需要，可以在函数参数中添加更多自定义属性）
         'country': countries,
+        'position': positions,  # 初始等于 country，跨境时可单独更新以区分所在地
     }
     
     return popdict, layer_keys
