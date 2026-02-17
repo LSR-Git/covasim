@@ -231,7 +231,7 @@ if _has_covasim:
                 return
             n_pts = int(sim.npts)
             self.region_data = {}
-            keys_stock = ['n_susceptible', 'n_exposed', 'n_infectious', 'n_recovered', 'n_dead', 'cum_infections']
+            keys_stock = ['n_susceptible', 'n_exposed', 'n_infectious', 'n_preinfectious', 'n_recovered', 'n_dead', 'n_diagnosed', 'n_quarantined', 'n_isolated', 'n_vaccinated', 'cum_infections', 'cum_reinfections', 'cum_recoveries']
             keys_severity = ['n_asymptomatic', 'n_presymptomatic', 'n_mild', 'n_severe', 'n_critical', 'n_recovered', 'n_dead']
             for r in self.regions:
                 self.region_data[r] = {
@@ -263,14 +263,32 @@ if _has_covasim:
                 self.region_data[region]['n_susceptible'][t] = np.count_nonzero(p.susceptible[inds])
                 self.region_data[region]['n_exposed'][t] = np.count_nonzero(p.exposed[inds])
                 self.region_data[region]['n_infectious'][t] = np.count_nonzero(p.infectious[inds])
+                # 与 Covasim 一致：潜伏期人数 = 暴露者 - 传染者
+                self.region_data[region]['n_preinfectious'][t] = (
+                    self.region_data[region]['n_exposed'][t]
+                    - self.region_data[region]['n_infectious'][t]
+                )
                 self.region_data[region]['n_recovered'][t] = np.count_nonzero(p.recovered[inds])
                 self.region_data[region]['n_dead'][t] = np.count_nonzero(p.dead[inds])
-                self.region_data[region]['cum_infections'][t] = (
-                    self.region_data[region]['n_exposed'][t]
-                    + self.region_data[region]['n_infectious'][t]
-                    + self.region_data[region]['n_recovered'][t]
-                    + self.region_data[region]['n_dead'][t]
-                )
+                self.region_data[region]['n_diagnosed'][t] = np.count_nonzero(p.diagnosed[inds])
+                self.region_data[region]['n_quarantined'][t] = np.count_nonzero(p.quarantined[inds])
+                self.region_data[region]['n_isolated'][t] = np.count_nonzero(p.isolated[inds])
+                self.region_data[region]['n_vaccinated'][t] = np.count_nonzero(p.vaccinated[inds])
+                # 与 Covasim 一致：累计感染 = 逐日 new_infections 的累加（当日新感染人数 = 该区域 date_exposed==t 的人数）
+                date_exposed = np.asarray(p.date_exposed)
+                new_inf_t = np.count_nonzero(inds & (date_exposed == t))
+                prev_cum = self.region_data[region]['cum_infections'][t - 1] if t > 0 else 0
+                self.region_data[region]['cum_infections'][t] = prev_cum + new_inf_t
+                # 与 Covasim 一致：累计复感 = 逐日 new_reinfections 的累加（当日复感人数 = 该区域 date_exposed==t 且 n_infections>=2 的人数）
+                n_infections = np.asarray(p.n_infections)
+                new_reinf_t = np.count_nonzero(inds & (date_exposed == t) & (n_infections >= 2))
+                prev_cum_reinf = self.region_data[region]['cum_reinfections'][t - 1] if t > 0 else 0
+                self.region_data[region]['cum_reinfections'][t] = prev_cum_reinf + new_reinf_t
+                # 与 Covasim 一致：累计恢复 = 逐日 new_recoveries 的累加（当日恢复人数 = 该区域 date_recovered==t 的人数）
+                date_recovered = np.asarray(p.date_recovered)
+                new_rec_t = np.count_nonzero(inds & (date_recovered == t))
+                prev_cum_rec = self.region_data[region]['cum_recoveries'][t - 1] if t > 0 else 0
+                self.region_data[region]['cum_recoveries'][t] = prev_cum_rec + new_rec_t
                 # 病程：无症状=传染期且未症状，症状前=暴露且未到传染日，轻症=症状且非重/危，重/危
                 exp_inds = inds.copy()
                 inf_inds = inds & p.infectious
@@ -305,12 +323,15 @@ def plot_two_country_epidemic_curves(
     save_path=None,
     show_severity=True,
     show_regions=None,
+    curves=None,
 ):
     '''
     按区域画 A/B 两区疫情曲线。
-    - show_severity=True（默认）：含右列各病程图；False 则仅左列 S/E/I(cum)/R/D。
+    - show_severity=True（默认）：含右列各病程图；False 则仅左列 S/E/I/R/D（均为当前数量）。
     - show_regions=None（默认）：两区都画。'A' 或 ('A',) 只画 A 区；'B' 或 ('B',) 只画 B 区。
       只画 A 区且 show_severity=False 时，即仅显示 A 区左上角那一幅 SEIR 图（1×1）。
+    - curves=None（默认）：画所有默认曲线。若指定列表如 ['n_infectious', 'n_recovered']，则只画指定的曲线。
+      可用曲线类型：'n_susceptible', 'n_exposed', 'n_infectious', 'n_preinfectious', 'n_recovered', 'n_dead', 'n_diagnosed', 'n_quarantined', 'n_isolated', 'n_vaccinated', 'cum_infections', 'cum_reinfections', 'cum_recoveries'
     需要 sim 在运行前加入 CountryRegionAnalyzer 并已 run。
     save_path: 可选，若提供则先将图片保存到该路径再 show。
     '''
@@ -368,12 +389,48 @@ def plot_two_country_epidemic_curves(
         Critical='#4169e1', R='#4dac26', D='#000000'
     )
 
+    # 定义可用的曲线类型及其标签、颜色
+    available_curves = {
+        # 当日统计人数
+        'n_susceptible': {'label': 'S 当日易感者', 'color': colors_seir['S'], 'markersize': 2, 'linewidth': 1.0},
+        'n_exposed': {'label': 'E 当日暴露者', 'color': colors_seir['E'], 'markersize': 2, 'linewidth': 1.0},
+        'n_infectious': {'label': 'I 当日传染者', 'color': colors_seir['I'], 'markersize': 2, 'linewidth': 1.0},
+        'n_preinfectious': {'label': 'E_pre 潜伏期（未传染）', 'color': colors_seir['E'], 'markersize': 2, 'linewidth': 1.0, 'linestyle': ':', 'alpha': 0.8},
+        'n_recovered': {'label': 'R 当日恢复者', 'color': colors_seir['R'], 'markersize': 2, 'linewidth': 1.0},
+        'n_dead': {'label': 'D 当日死亡者', 'color': colors_seir['D'], 'markersize': 4, 'linewidth': 2.5},
+        'n_diagnosed': {'label': '已确诊', 'color': '#ff8c00', 'markersize': 2, 'linewidth': 1.0},
+        'n_quarantined': {'label': '接触者隔离', 'color': '#9370db', 'markersize': 2, 'linewidth': 1.0},
+        'n_isolated': {'label': '检测隔离', 'color': '#ff1493', 'markersize': 2, 'linewidth': 1.0},
+        'n_vaccinated': {'label': '已接种', 'color': '#32cd32', 'markersize': 2, 'linewidth': 1.0},
+
+        'cum_infections': {'label': 'I_cum 累计感染发生次数', 'color': colors_seir['I'], 'markersize': 2, 'linewidth': 1.0, 'linestyle': '--', 'alpha': 0.7},
+        'cum_reinfections': {'label': 'reI_cum 累计复感发生次数', 'color': colors_seir['I'], 'markersize': 2, 'linewidth': 1.0, 'linestyle': ':', 'alpha': 0.8},
+        'cum_recoveries': {'label': 'R_cum 累计恢复次数', 'color': colors_seir['R'], 'markersize': 2, 'linewidth': 1.0, 'linestyle': '--', 'alpha': 0.7},
+    }
+
+    # 如果未指定 curves，使用默认曲线（排除 S）
+    if curves is None:
+        curves = ['n_exposed', 'n_infectious', 'n_recovered', 'n_dead']
+
     def _plot_seir(ax, t, d, title, region_label):
-        ax.plot(t, d['n_susceptible'], color=colors_seir['S'], label='S 易感者', marker='o', markersize=2)
-        ax.plot(t, d['n_exposed'], color=colors_seir['E'], label='E 暴露者', marker='o', markersize=2)
-        ax.plot(t, d['cum_infections'], color=colors_seir['I'], label='I 累计感染者', marker='o', markersize=2)
-        ax.plot(t, d['n_recovered'], color=colors_seir['R'], label='R 恢复者', marker='o', markersize=2)
-        ax.plot(t, d['n_dead'], color=colors_seir['D'], label='D 死亡者', marker='o', markersize=2)
+        for curve_key in curves:
+            if curve_key not in available_curves:
+                continue
+            if curve_key not in d:
+                continue
+            curve_config = available_curves[curve_key]
+            plot_kwargs = {
+                'color': curve_config['color'],
+                'label': curve_config['label'],
+                'marker': 'o',
+                'markersize': curve_config['markersize'],
+                'linewidth': curve_config.get('linewidth', 1.0),
+            }
+            if 'linestyle' in curve_config:
+                plot_kwargs['linestyle'] = curve_config['linestyle']
+            if 'alpha' in curve_config:
+                plot_kwargs['alpha'] = curve_config['alpha']
+            ax.plot(t, d[curve_key], **plot_kwargs)
         ax.set_xlabel('时间 (天)', fontsize=fontsize)
         ax.set_ylabel('人员数量', fontsize=fontsize)
         ax.set_title(title, fontsize=fontsize)
@@ -398,9 +455,9 @@ def plot_two_country_epidemic_curves(
 
     for i, reg in enumerate(to_show):
         t = data[reg]['t']
-        _plot_seir(_get_ax(i, 0), t, data[reg], f'({reg}) 每日累计感染者情况', f'区域 {reg}')
+        _plot_seir(_get_ax(i, 0), t, data[reg], f'({reg}) 每日当前感染者情况', f'区域 {reg}')
         if show_severity and n_cols >= 2:
-            _plot_severity(_get_ax(i, 1), t, data[reg], f'({reg}) 每日累计各病程感染者情况')
+            _plot_severity(_get_ax(i, 1), t, data[reg], f'({reg}) 每日当前各病程感染者情况')
 
     plt.tight_layout()
     if save_path:

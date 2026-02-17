@@ -17,6 +17,10 @@ def add_cross_layer(
     会就地修改 popdict：新增 'crosser' 布尔属性；在 contacts 中新增 'cross' 层；
     若有至少两个区域则向 popdict['layer_keys'] 追加 'cross'。
 
+    注：本函数仅做静态网络与 crosser 标记。若需「跨境时 cross 权重 1、base 权重 0，回国时相反」
+    以及「每日从境内候鸟中按比例随机出境、境外停留 1–7 天」等动态行为，请在仿真中使用
+    CrosserTravel 干预（见 compose_intervention.py）实现。
+
     Args:
         popdict: 人口字典，须含 'country' 数组、'contacts' 与 'layer_keys'
         frac_travelers: 每区流动人口比例 (0~1)
