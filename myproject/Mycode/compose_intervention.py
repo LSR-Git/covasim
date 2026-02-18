@@ -21,9 +21,11 @@ import MyPlot
 from my_intervention import (
     ContactTracingAOnly,
     reduce_region_a_contacts,
+    ScaleRegionBaseBetaByPhase,
     CrosserTravel,
     MaskWearing,
     MaskWearingTwoPhase,
+    MaskRelax,
 )
 from my_utils import (
     create_vaccination_schedule,
@@ -189,9 +191,6 @@ test_for_ct = cv.test_prob(
     test_delay=2,
     subtarget=_subtarget_position_a,
 )
-
-# intervention_contact_tracing = [test_for_ct, contact_tracing_50]
-
 # ========== 场景三专用：第三阶段（round3 起）A 区检测/追踪概率提升一倍 ==========
 # 境内检测：阶段 1–2 为 0.2/0.05、阶段 3 为 0.4/0.1；接触者追踪：阶段 1–2 为 0.2、阶段 3 为 0.4
 test_isolate_a_case03_phase12 = cv.test_prob(
@@ -286,6 +285,64 @@ test_isolate_crosser_case03 = cv.test_prob(
     subtarget=_subtarget_crosser,
 )
 
+# ================== 场景四专用：阶段 3 境内检测在 day 42 前结束，阶段 4 政策放松 =======================
+# 阶段 3 境内检测（仅 day 34–41，阶段 4 起不做境内检测）
+test_isolate_a_case04_phase3 = cv.test_prob(
+    symp_prob=0.4,
+    asymp_prob=0.1,
+    start_day=_scenario_a_start_round3,
+    end_day=_scenario_a_start_round4 - 1,
+    test_delay=2,
+    subtarget=_subtarget_position_a,
+)
+# 阶段 3 接触者追踪（仅 day 34–41，阶段 4 起恢复为部分追踪，需在 day 42 前主动结束）
+contact_tracing_case04_phase3 = ContactTracingAOnly(
+    trace_probs=0.4,
+    trace_time=2,
+    start_day=_scenario_a_start_round3,
+    end_day=_scenario_a_start_round4 - 1,
+    region_key=_region_key,
+    region_name=_region_name_a,
+)
+crosser_travel_case04_resume = CrosserTravel(
+    frac_cross_per_day=0.1,
+    duration_min=1,
+    duration_max=7,
+    start_day=_scenario_a_start_round4,
+    end_day_outbound=None,
+)
+# 阶段 4 不做境内检测，仅恢复边境检测、接触者追踪与口罩放松
+test_isolate_crosser_case04_phase4 = cv.test_prob(
+    symp_prob=0.8,
+    asymp_prob=0.1,
+    start_day=_scenario_a_start_round4,
+    test_delay=1,
+    subtarget=_subtarget_crosser,
+)
+contact_tracing_case04_phase4 = ContactTracingAOnly(
+    trace_probs=0.2,
+    trace_time=2,
+    start_day=_scenario_a_start_round4,
+    region_key=_region_key,
+    region_name=_region_name_a,
+)
+mask_relax_a_case04 = MaskRelax(
+    start_day=_scenario_a_start_round4,
+    efficacy=0.5,
+    fraction=1.0,
+    subtarget={'inds': lambda sim: np.where(is_position_a(sim))[0]},
+)
+# 境内流动：阶段1 无限制(1.0)、阶段2 部分限制(0.5)、阶段3 增强限制(0.3)、阶段4 无限制(1.0)；放在 CrosserTravel 之后以便每日覆盖 A 区境内边 beta
+domestic_mobility_case04 = ScaleRegionBaseBetaByPhase(
+    region_key=_region_key,
+    region_name=_region_name_a,
+    day_scale_pairs=[
+        (0, 1.0),
+        (_scenario_a_start_round2, 0.5),
+        (_scenario_a_start_round3, 0.3),
+        (_scenario_a_start_round4, 1.0),
+    ],
+)
 
 # ==================场景模拟01 只进行第一阶段干预===========================
 intervention_scenario_case01 = [
@@ -318,11 +375,37 @@ intervention_scenario_case03 = [
     contact_tracing_50_case03_phase12,
     contact_tracing_50_case03_phase3,
 ]
+# ==================场景模拟04 四阶段全流程（与四阶段策略图对应）======================
+# 阶段1 常规(0–16)：境内检测 0.2/0.05、不追踪→阶段2起追踪；口罩 A 0.5；疫苗第1批；跨境 入境核检
+# 阶段2 升级(17–33)：境内检测同上；接触者 部分追踪0.2；口罩 A 1.0 + B 0.5；疫苗第2批；跨境 入境核检
+# 阶段3 严控(34–41)：境内检测 高频 0.4/0.1（day41 结束）；接触者 高频 0.4（day41 结束）；口罩 仍 A 1.0；疫苗第3批+B区；跨境 禁止出境；阶段4 起 境内检测/高频追踪 均不再执行
+# 阶段4 温和(42+)：境内检测 无；接触者 部分追踪 0.2；口罩 无限制；跨境 恢复派出+入境核检
+# 说明：阶段3 口罩保持 1.0（按你的要求）；境内流动已实现 部分/增强/无限制 三档
+intervention_scenario_case04 = [
+    crosser_travel_case03,
+    crosser_travel_case04_resume,
+    domestic_mobility_case04,
+    mask_wearing_a_round1_2,
+    mask_wearing_b_phase2,
+    vaccinate_a_10k_round1_2_3,
+    vaccinate_b_5000,
+    test_isolate_a_case03_phase12,
+    test_isolate_a_case04_phase3,
+    test_isolate_crosser_case03,
+    test_isolate_crosser_case04_phase4,
+    contact_tracing_50_case03_phase12,
+    contact_tracing_case04_phase3,
+    contact_tracing_case04_phase4,
+    mask_relax_a_case04,
+]
+# ==================场景模拟05 四阶段全流程 在第80天增加30个感染者======================
+intervention_scenario_case05 = [
 
+]
 
 interventions = []  # 无干预
 # ==================场景模拟===========================
-interventions = intervention_scenario_case01  # A 区 50% 口罩 + 10000 剂疫苗 + 候鸟 50% 检测隔离(延迟1天)，B 区无政策
+interventions = intervention_scenario_case04  # A 区 50% 口罩 + 10000 剂疫苗 + 候鸟 50% 检测隔离(延迟1天)，B 区无政策
 
 sim = cv.Sim(
     pars=custom_pars,
@@ -338,7 +421,7 @@ sim.run()
 # 保存模拟结果与图片到指定目录（传完整路径，避免 sc.makefilepath 拼接时中文名被截成只剩 .sim）
 results_dir = r'myproject\results\双耦合网络图片\组合模拟'
 os.makedirs(results_dir, exist_ok=True)
-sim_basename = 'case01'
+sim_basename = 'case04'
 sim_path = os.path.join(results_dir, sim_basename + '.sim')
 sim.save(filename=sim_path)
 

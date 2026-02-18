@@ -87,6 +87,44 @@ class reduce_region_a_contacts(cv.Intervention):
         self._applied = True
 
 
+# ========== 2b. 境内流动：按阶段对指定区域 base 层 beta 乘系数（可阶段 4 恢复为 1.0） ==========
+class ScaleRegionBaseBetaByPhase(cv.Intervention):
+    '''按日对涉及指定区域的 base 层边的 beta 设为当前阶段系数，用于境内流动 部分/增强/无限制 分阶段。
+    day_scale_pairs: [(day_start, scale), ...] 升序，表示从 day_start 起使用 scale，直至下一段起始日。如 [(0,1.0), (17,0.5), (34,0.3), (42,1.0)]。'''
+    def __init__(self, region_key=None, region_name=None, day_scale_pairs=None, **kwargs):
+        super().__init__(**kwargs)
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name = region_name if region_name is not None else _region_name_a
+        self.day_scale_pairs = sorted(day_scale_pairs or [(0, 1.0)], key=lambda x: x[0])
+
+    def _scale_for_day(self, t):
+        s = 1.0
+        for day_start, scale in self.day_scale_pairs:
+            if t >= day_start:
+                s = scale
+        return cvd.default_float(s)
+
+    def apply(self, sim):
+        if 'base' not in sim.people.contacts:
+            return
+        people = sim.people
+        position = getattr(people, self.region_key, None)
+        country = getattr(people, 'country', None)
+        if position is None:
+            return
+        t = sim.t
+        scale = self._scale_for_day(t)
+        in_a = (np.asarray(position) == self.region_name)
+        is_abroad = (np.asarray(position) != np.asarray(country))
+        layer = people.contacts['base']
+        p1, p2 = layer['p1'], layer['p2']
+        beta = layer['beta']
+        edge_in_a = in_a[p1] | in_a[p2]
+        edge_abroad = is_abroad[p1] | is_abroad[p2]
+        domestic_in_a = edge_in_a & ~edge_abroad
+        beta[domestic_in_a] = scale
+
+
 # ========== 3. 候鸟动态跨境 ==========
 class CrosserTravel(cv.Intervention):
     '''候鸟动态跨境：每日先让到期者回国，再从境内候鸟中按比例随机选人出境（境外停留 duration_min~duration_max 天）；
@@ -212,6 +250,40 @@ class MaskWearing(cv.Intervention):
             wear_inds = np.random.choice(inds, size=n_wear, replace=False) if n_wear > 0 else np.array([], dtype=int)
         if len(wear_inds) > 0:
             sim.people.rel_trans[wear_inds] *= self.efficacy
+        self._applied = True
+
+
+# ========== 4b. 口罩放松（撤销此前口罩对 rel_trans 的降低） ==========
+class MaskRelax(cv.Intervention):
+    '''在 start_day 当天对 subtarget 人群执行 rel_trans /= efficacy，用于“摘口罩”（撤销此前 MaskWearing/MaskWearingTwoPhase 的乘数）。'''
+    def __init__(self, start_day=10, efficacy=0.7, fraction=1.0, subtarget=None, **kwargs):
+        super().__init__(**kwargs)
+        self.start_day = start_day
+        self.efficacy = efficacy
+        self.fraction = fraction
+        self.subtarget = subtarget
+        self._applied = False
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+
+    def apply(self, sim):
+        if sim.t != self.start_day or self._applied:
+            return
+        if self.subtarget is not None and 'inds' in self.subtarget:
+            inds = self.subtarget['inds'](sim)
+        else:
+            inds = np.arange(sim.n)
+        if len(inds) == 0:
+            return
+        if self.fraction >= 1.0:
+            relax_inds = inds
+        else:
+            n_relax = min(len(inds), int(len(inds) * self.fraction + 0.5))
+            relax_inds = np.random.choice(inds, size=n_relax, replace=False) if n_relax > 0 else np.array([], dtype=int)
+        if len(relax_inds) > 0 and self.efficacy != 0:
+            sim.people.rel_trans[relax_inds] /= self.efficacy
         self._applied = True
 
 
