@@ -83,12 +83,19 @@ _scenario_a_start_round2 = 17
 _scenario_a_start_round3 = 34
 _scenario_a_start_round4 = 42
 
-# 统一：所有干预的“A 区”均按当前所在地 position=='A' 判定（与 country 户籍区分，便于跨境场景）
+# 统一：所有干预的“A/B 区”均按当前所在地 position=='A'/'B' 判定（与 country 户籍区分，便于跨境场景）
 _region_key = 'position'
 _region_name_a = 'A'
+_region_name_b = 'B'
 
 def _is_position_a(sim):
     return (np.asarray(getattr(sim.people, _region_key)) == _region_name_a)
+
+
+def _is_position_b(sim):
+    """当前所在地为 B 区（position=='B'）。"""
+    return (np.asarray(getattr(sim.people, _region_key)) == _region_name_b)
+
 
 # 仅 A 区有资格的 subtarget（检测/追踪/疫苗接种等共用）
 _subtarget_position_a = {
@@ -194,6 +201,54 @@ contact_tracing_50 = ContactTracingAOnly(
 )
 intervention_contact_tracing = [test_for_ct, contact_tracing_50]
 
+# ========== 场景三专用：第三阶段（round3 起）A 区检测/追踪概率提升一倍 ==========
+# 境内检测：阶段 1–2 为 0.2/0.05、阶段 3 为 0.4/0.1；接触者追踪：阶段 1–2 为 0.2、阶段 3 为 0.4
+test_isolate_a_case03_phase12 = cv.test_prob(
+    symp_prob=0.2,
+    asymp_prob=0.05,
+    start_day=intervention_start,
+    end_day=_scenario_a_start_round3 - 1,
+    test_delay=2,
+    subtarget=_subtarget_position_a,
+)
+test_isolate_a_case03_phase3 = cv.test_prob(
+    symp_prob=0.4,
+    asymp_prob=0.1,
+    start_day=_scenario_a_start_round3,
+    test_delay=2,
+    subtarget=_subtarget_position_a,
+)
+test_for_ct_case03_phase12 = cv.test_prob(
+    symp_prob=0.2,
+    asymp_prob=0.05,
+    start_day=_scenario_a_start_round2,
+    end_day=_scenario_a_start_round3 - 1,
+    test_delay=2,
+    subtarget=_subtarget_position_a,
+)
+test_for_ct_case03_phase3 = cv.test_prob(
+    symp_prob=0.4,
+    asymp_prob=0.1,
+    start_day=_scenario_a_start_round3,
+    test_delay=2,
+    subtarget=_subtarget_position_a,
+)
+contact_tracing_50_case03_phase12 = ContactTracingAOnly(
+    trace_probs=0.2,
+    trace_time=2,
+    start_day=_scenario_a_start_round2,
+    end_day=_scenario_a_start_round3 - 1,
+    region_key=_region_key,
+    region_name=_region_name_a,
+)
+contact_tracing_50_case03_phase3 = ContactTracingAOnly(
+    trace_probs=0.4,
+    trace_time=2,
+    start_day=_scenario_a_start_round3,
+    region_key=_region_key,
+    region_name=_region_name_a,
+)
+
 # ========== 3. 疫苗接种 ==========
 # 3a. A 区随机接种 3000 剂（干预开始日当天 3000 剂，仅 position=='A' 有资格）
 def _sequence_random(people):
@@ -264,6 +319,28 @@ vaccinate_a_10k_round1_2 = cv.vaccinate_num(
     sequence=_sequence_random,
     subtarget=_subtarget_position_a,
 )
+# 场景三：A 区三批疫苗（第 0/17/34 天各 10000 剂）
+vaccinate_a_10k_round1_2_3 = cv.vaccinate_num(
+    vaccine='pfizer',
+    num_doses={
+        _scenario_a_start_round1: 10000,
+        _scenario_a_start_round2: 10000,
+        _scenario_a_start_round3: 10000,
+    },
+    sequence=_sequence_random,
+    subtarget=_subtarget_position_a,
+)
+# B 区疫苗接种（仅场景三：第三阶段起 5000 剂）
+_subtarget_position_b = {
+    'inds': lambda sim: np.arange(sim.n),
+    'vals': lambda sim: _is_position_b(sim).astype(float),
+}
+vaccinate_b_5000 = cv.vaccinate_num(
+    vaccine='pfizer',
+    num_doses={_scenario_a_start_round3: 5000},
+    sequence=_sequence_random,
+    subtarget=_subtarget_position_b,
+)
 
 # ========== 4. 境内流动限制：对 A 区（position=='A'）减少 50% 的 base 层接触边 ==========
 # 使用内置 clip_edges 对 base 层整体减半（若需仅 A 区减边，可改用下方 reduce_region_a_contacts_50）
@@ -320,18 +397,19 @@ clip_base_50_region_a = reduce_region_a_contacts_50(start_day=_scenario_a_start_
 # popdict = CrossNetwork.add_cross_layer(popdict_base, frac_travelers=0, n_cross_per_person=10, cross_beta=0.6, cross_layer_seed=seed_cross_layer)
 
 # ========== 5b. 候鸟动态跨境：每日境内候鸟按比例出境，境外 1–7 天，跨境时 cross 权重 1/base 权重 0，回国时相反 ==========
-_region_name_b = 'B'
 
 
 class CrosserTravel(cv.Intervention):
     '''候鸟动态跨境：每日先让到期者回国，再从境内候鸟中按比例随机选人出境（境外停留 duration_min~duration_max 天）；
-    跨境时 cross 层权重有效、base 层权重 0，回国时 base 有效、cross 0。'''
+    跨境时 cross 层权重有效、base 层权重 0，回国时 base 有效、cross 0。
+    end_day_outbound：若指定，该日及之后不再派出新出境人员，仅保留到期回国逻辑。'''
     def __init__(
         self,
         frac_cross_per_day=0.1,
         duration_min=1,
         duration_max=7,
         start_day=0,
+        end_day_outbound=None,
         region_key=None,
         region_name_a=None,
         region_name_b=None,
@@ -342,6 +420,7 @@ class CrosserTravel(cv.Intervention):
         self.duration_min = int(duration_min)
         self.duration_max = int(duration_max)
         self.start_day = start_day
+        self.end_day_outbound = end_day_outbound
         self.region_key = region_key if region_key is not None else _region_key
         self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
         self.region_name_b = region_name_b if region_name_b is not None else _region_name_b
@@ -351,6 +430,8 @@ class CrosserTravel(cv.Intervention):
     def initialize(self, sim):
         super().initialize()
         self.start_day = sim.day(self.start_day)
+        if self.end_day_outbound is not None:
+            self.end_day_outbound = sim.day(self.end_day_outbound)
         n = sim.n
         self._return_day = np.full(n, np.nan, dtype=float)
         self._cross_beta = float(sim['beta_layer'].get('cross', 1.0))
@@ -377,8 +458,8 @@ class CrosserTravel(cv.Intervention):
             position[returning] = country[returning]
             return_day[returning] = np.nan
 
-        # 2) 从境内候鸟中按比例随机选人出境（仅从 start_day 开始，排除被隔离人员）
-        if t >= self.start_day:
+        # 2) 从境内候鸟中按比例随机选人出境（仅从 start_day 开始；end_day_outbound 之后不再派出）
+        if t >= self.start_day and (self.end_day_outbound is None or t < self.end_day_outbound):
             at_home = crosser & np.isnan(return_day) & ~people.quarantined & ~people.isolated
             n_at_home = np.count_nonzero(at_home)
             if n_at_home > 0 and self.frac_cross_per_day > 0:
@@ -414,6 +495,23 @@ class CrosserTravel(cv.Intervention):
 
 # 候鸟动态跨境干预实例：每日 10% 境内候鸟出境，境外 1–7 天，第 0 天开始
 crosser_travel = CrosserTravel(frac_cross_per_day=0.1, duration_min=1, duration_max=7, start_day=0)
+# 场景三：第三阶段起停止派出出境（end_day_outbound=34），仅保留到期回国
+crosser_travel_case03 = CrosserTravel(
+    frac_cross_per_day=0.1,
+    duration_min=1,
+    duration_max=7,
+    start_day=0,
+    end_day_outbound=_scenario_a_start_round3,
+)
+# 场景三：边境检测仅在阶段 1–2（round3 前一天结束）
+test_isolate_crosser_case03 = cv.test_prob(
+    symp_prob=0.8,
+    asymp_prob=0.1,
+    start_day=_scenario_a_start_round1,
+    end_day=_scenario_a_start_round3 - 1,
+    test_delay=1,
+    subtarget=_subtarget_crosser,
+)
 
 # ========== 6. 口罩佩戴：通过 rel_trans 减少 30% 传播性 ==========
 class MaskWearing(cv.Intervention):
@@ -527,7 +625,8 @@ class MaskWearingTwoPhase(cv.Intervention):
                         sim.people.rel_trans[wear_2] *= self.efficacy
                         self._wearing_inds.update(wear_2.tolist())
 
-# ================== 两阶段口罩佩戴：第一阶段 0.5 比例，第二阶段 1.0 比例 =======================
+# ================== 两阶段口罩佩戴：第一阶段 A 区 0.5，第二阶段 A 区 1.0 + B 区 0.5 =======================
+# 第一阶段：仅 A 区 0.5 比例；第二阶段：A 区补足到 1.0，B 区 0.5 比例（两干预需同时加入情景）
 mask_wearing_a_round1_2 = MaskWearingTwoPhase(
     start_day_1=_scenario_a_start_round1,
     start_day_2=_scenario_a_start_round2,
@@ -535,6 +634,13 @@ mask_wearing_a_round1_2 = MaskWearingTwoPhase(
     fraction_1=0.5,
     fraction_2=1.0,
     subtarget={'inds': lambda sim: np.where(_is_position_a(sim))[0]},
+)
+# 第二阶段起：B 区 0.5 比例佩戴（与 mask_wearing_a_round1_2 搭配实现「A 1.0、B 0.5」）
+mask_wearing_b_phase2 = MaskWearing(
+    start_day=_scenario_a_start_round2,
+    efficacy=0.5,
+    fraction=0.5,
+    subtarget={'inds': lambda sim: np.where(_is_position_b(sim))[0]},
 )
 
 # ========== 情景：A 区 50% 口罩 + 第一批疫苗 10000 剂 + 边境检测（候鸟 50% 检测隔离，延迟1天），B 区无政策 ==========
@@ -552,15 +658,32 @@ intervention_scenario_case01 = [
     mask_wearing_a_50,
     vaccinate_a_10k,
 ]
-# ==================场景模拟02 只进行第一和第二阶段干预======================
+# ==================场景模拟02 第一和第二阶段干预（A 区 0.5→1.0，第二阶段 B 区 0.5）======================
 intervention_scenario_case02 = [
     crosser_travel,
     mask_wearing_a_round1_2,
+    mask_wearing_b_phase2,
     vaccinate_a_10k_round1_2,
-    test_isolate_a,  
-    contact_tracing_50, 
-
-    test_isolate_crosser, 
+    test_isolate_a,
+    contact_tracing_50,
+    test_isolate_crosser,
+]
+# ================== 场景模拟03：第一、二阶段同 case02，第三阶段（round3=34 起）加强 =======================
+# 阶段 1–2：与 case02 相同（A 区口罩 0.5→1.0，B 区 0.5，A 区两批疫苗，境内检测/追踪，边境检测，跨境流动）
+# 阶段 3（day 34 起）：A 区境内检测与接触者追踪概率提升一倍；A 区第三批疫苗 10000 剂；停止跨境派出+取消边境检测；B 区接种 5000 剂
+intervention_scenario_case03 = [
+    crosser_travel_case03,
+    mask_wearing_a_round1_2,
+    mask_wearing_b_phase2,
+    vaccinate_a_10k_round1_2_3,
+    vaccinate_b_5000,
+    test_isolate_a_case03_phase12,
+    test_isolate_a_case03_phase3,
+    # test_for_ct_case03_phase12,
+    # test_for_ct_case03_phase3,
+    contact_tracing_50_case03_phase12,
+    contact_tracing_50_case03_phase3,
+    test_isolate_crosser_case03,
 ]
 # ========== 按需将上述干预加入 interventions 列表，再传入 Sim ==========
 # 示例：无干预 | 仅检测隔离 | 检测+接触者追踪 | 疫苗接种(二选一) | 境内减边 | 口罩佩戴 | 候鸟动态跨境(crosser_travel) | A区情景(50%口罩+1万剂疫苗+候鸟检测隔离) | 跨境限制需用上面 popdict 建无跨区层
@@ -574,7 +697,7 @@ interventions = []  # 无干预
 # interventions = [clip_base_50_region_a]
 # interventions = [crosser_travel]
 # ==================场景模拟===========================
-interventions = intervention_scenario_case02  # A 区 50% 口罩 + 10000 剂疫苗 + 候鸟 50% 检测隔离(延迟1天)，B 区无政策
+interventions = intervention_scenario_case03  # A 区 50% 口罩 + 10000 剂疫苗 + 候鸟 50% 检测隔离(延迟1天)，B 区无政策
 
 sim = cv.Sim(
     pars=custom_pars,
@@ -588,9 +711,9 @@ sim.initialize()
 sim.run()
 
 # 保存模拟结果与图片到指定目录（传完整路径，避免 sc.makefilepath 拼接时中文名被截成只剩 .sim）
-results_dir = r'myproject\results\双耦合网络图片\单个干预模拟\组合模拟'
+results_dir = r'myproject\results\双耦合网络图片\组合模拟'
 os.makedirs(results_dir, exist_ok=True)
-sim_basename = 'case02'
+sim_basename = 'case03'
 sim_path = os.path.join(results_dir, sim_basename + '.sim')
 sim.save(filename=sim_path)
 
