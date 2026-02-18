@@ -155,10 +155,10 @@ mask_wearing_b_phase2 = MaskWearing(
     fraction=0.5,
     subtarget={'inds': lambda sim: np.where(is_position_b(sim))[0]},
 )
-# 场景二使用：A 区第二批疫苗
+# 场景二使用：A 区第一批疫苗
 vaccinate_a_10k_round1_2 = cv.vaccinate_num(
     vaccine='pfizer',
-    num_doses={_scenario_a_start_round1: 10000,_scenario_a_start_round2: 10000},
+    num_doses={_scenario_a_start_round2: 10000},
     sequence=sequence_random,
     subtarget=_subtarget_position_a,
 )
@@ -254,11 +254,10 @@ vaccinate_a = cv.vaccinate_num(
     sequence=sequence_random,
     subtarget=_subtarget_position_a,
 )
-# 场景三使用：A 区三批疫苗
+# 场景三使用：A 区二批疫苗
 vaccinate_a_10k_round1_2_3 = cv.vaccinate_num(
     vaccine='pfizer',
     num_doses={
-        _scenario_a_start_round1: 10000,
         _scenario_a_start_round2: 10000,
         _scenario_a_start_round3: 10000,
     },
@@ -351,11 +350,11 @@ domestic_mobility_case04 = ScaleRegionBaseBetaByPhase(
     ],
 )
 
-# ==================场景模拟01 只进行第一阶段干预===========================
+# ==================场景模拟01 只进行第一阶段干预（无疫苗，有入境检测）===========================
 intervention_scenario_case01 = [
     crosser_travel,
     mask_wearing_a_50,
-    vaccinate_a_10k,
+    test_isolate_crosser,
 ]
 # ==================场景模拟02 第一和第二阶段干预（A 区 0.5→1.0，第二阶段 B 区 0.5）======================
 intervention_scenario_case02 = [
@@ -530,7 +529,7 @@ sim.run()
 # 保存模拟结果与图片到指定目录（传完整路径，避免 sc.makefilepath 拼接时中文名被截成只剩 .sim）
 results_dir = r'myproject\results\双耦合网络图片\组合模拟'
 os.makedirs(results_dir, exist_ok=True)
-sim_basename = 'case06'
+sim_basename = 'case06_test'
 sim_path = os.path.join(results_dir, sim_basename + '.sim')
 sim.save(filename=sim_path)
 

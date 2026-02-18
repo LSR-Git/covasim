@@ -14,7 +14,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False  # 解决负号显示为方框
 # 保存模拟结果与图片到指定目录（传完整路径，避免 sc.makefilepath 拼接时中文名被截成只剩 .sim）
 results_dir = r'myproject\results\双耦合网络图片\组合模拟'
 os.makedirs(results_dir, exist_ok=True)
-sim_basename = 'case04'
+sim_basename = 'case05'
 sim_path = os.path.join(results_dir, sim_basename + '.sim')
 
 sim = cv.load(sim_path)
