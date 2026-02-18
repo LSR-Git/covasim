@@ -80,6 +80,38 @@ def make_subtarget_crosser(crosser_prob=0.5, region_key=None, region_name_a=None
     return {'inds': inds, 'vals': vals}
 
 
+def make_subtarget_position_exclude_undocumented(region_key=None, region_name=None):
+    """构造按区域筛选且排除 undocumented 的 subtarget（case05 境内检测用）。"""
+    rk = _default_region_key(region_key)
+    rn = REGION_NAME_A if region_name is None else region_name
+
+    def inds(sim):
+        undocumented = getattr(sim.people, 'undocumented', np.zeros(sim.n, dtype=bool))
+        in_region = (np.asarray(getattr(sim.people, rk)) == rn)
+        return np.where(in_region & ~undocumented)[0]
+
+    def vals(sim):
+        return np.ones(len(inds(sim)), dtype=float)
+
+    return {'inds': inds, 'vals': vals}
+
+
+def make_subtarget_crosser_exclude_undocumented(crosser_prob=0.5, region_key=None, region_name_a=None):
+    """边境检测 subtarget：在 A 区的候鸟且非 undocumented 为 crosser_prob，其余 0（case05 用）。"""
+    rk = _default_region_key(region_key)
+    rna = _default_region_name_a(region_name_a)
+
+    def inds(sim):
+        return np.arange(sim.n)
+
+    def vals(sim):
+        undocumented = getattr(sim.people, 'undocumented', np.zeros(sim.n, dtype=bool))
+        in_a_crosser = is_position_a_crosser(sim, region_key=rk, region_name_a=rna)
+        return np.where(in_a_crosser & ~undocumented, float(crosser_prob), 0.0).astype(float)
+
+    return {'inds': inds, 'vals': vals}
+
+
 def sequence_random(people):
     """疫苗接种顺序：随机排列。"""
     return np.random.permutation(len(people.uid))

@@ -26,6 +26,7 @@ from my_intervention import (
     MaskWearing,
     MaskWearingTwoPhase,
     MaskRelax,
+    InjectUndocumentedInfectious,
 )
 from my_utils import (
     create_vaccination_schedule,
@@ -35,6 +36,8 @@ from my_utils import (
     is_position_b,
     make_subtarget_position,
     make_subtarget_crosser,
+    make_subtarget_position_exclude_undocumented,
+    make_subtarget_crosser_exclude_undocumented,
 )
 
 # 设置 matplotlib 显示中文（Windows 常用 SimHei / 微软雅黑）
@@ -100,6 +103,10 @@ _scenario_a_start_round1 = 0
 _scenario_a_start_round2 = 17
 _scenario_a_start_round3 = 34
 _scenario_a_start_round4 = 42
+
+# 场景五：偷渡者注入（可配置）
+CASE05_INJECT_DAY = 80
+CASE05_N_UNDOCUMENTED = 30
 
 # 统一：所有干预的“A/B 区”均按当前所在地 position=='A'/'B' 判定（与 country 户籍区分，便于跨境场景）
 _region_key = 'position'
@@ -398,14 +405,116 @@ intervention_scenario_case04 = [
     contact_tracing_case04_phase4,
     mask_relax_a_case04,
 ]
-# ==================场景模拟05 四阶段全流程 在第80天增加30个感染者======================
-intervention_scenario_case05 = [
 
+# ================== 场景五：四阶段全流程 + 可配置日注入 n 个偷渡者（不可检测/隔离） =======================
+_subtarget_position_a_case05 = make_subtarget_position_exclude_undocumented(_region_key, _region_name_a)
+_subtarget_crosser_case05 = make_subtarget_crosser_exclude_undocumented(0.5, _region_key, _region_name_a)
+test_isolate_a_case03_phase12_case05 = cv.test_prob(
+    symp_prob=0.2,
+    asymp_prob=0.05,
+    start_day=intervention_start,
+    end_day=_scenario_a_start_round3 - 1,
+    test_delay=2,
+    subtarget=_subtarget_position_a_case05,
+)
+test_isolate_a_case04_phase3_case05 = cv.test_prob(
+    symp_prob=0.4,
+    asymp_prob=0.1,
+    start_day=_scenario_a_start_round3,
+    end_day=_scenario_a_start_round4 - 1,
+    test_delay=2,
+    subtarget=_subtarget_position_a_case05,
+)
+test_isolate_crosser_case03_case05 = cv.test_prob(
+    symp_prob=0.8,
+    asymp_prob=0.1,
+    start_day=_scenario_a_start_round1,
+    end_day=_scenario_a_start_round3 - 1,
+    test_delay=1,
+    subtarget=_subtarget_crosser_case05,
+)
+test_isolate_crosser_case04_phase4_case05 = cv.test_prob(
+    symp_prob=0.8,
+    asymp_prob=0.1,
+    start_day=_scenario_a_start_round4,
+    test_delay=1,
+    subtarget=_subtarget_crosser_case05,
+)
+inject_undocumented_case05 = InjectUndocumentedInfectious(
+    inject_day=CASE05_INJECT_DAY,
+    n=CASE05_N_UNDOCUMENTED,
+    region_key=_region_key,
+    region_name_a=_region_name_a,
+)
+intervention_scenario_case05 = [
+    crosser_travel_case03,
+    crosser_travel_case04_resume,
+    inject_undocumented_case05,
+    domestic_mobility_case04,
+    mask_wearing_a_round1_2,
+    mask_wearing_b_phase2,
+    vaccinate_a_10k_round1_2_3,
+    vaccinate_b_5000,
+    test_isolate_a_case03_phase12_case05,
+    test_isolate_a_case04_phase3_case05,
+    test_isolate_crosser_case03_case05,
+    test_isolate_crosser_case04_phase4_case05,
+    contact_tracing_50_case03_phase12,
+    contact_tracing_case04_phase3,
+    contact_tracing_case04_phase4,
+    mask_relax_a_case04,
+]
+
+# ================== 场景六：在场景五基础上，第 85 天起开启境内检测、A 区口罩全员、境内流动 0.5 =======================
+CASE06_DAY85 = 85
+domestic_mobility_case06 = ScaleRegionBaseBetaByPhase(
+    region_key=_region_key,
+    region_name=_region_name_a,
+    day_scale_pairs=[
+        (0, 1.0),
+        (_scenario_a_start_round2, 0.5),
+        (_scenario_a_start_round3, 0.3),
+        (_scenario_a_start_round4, 1.0),
+        (CASE06_DAY85, 0.5),
+    ],
+)
+test_isolate_a_case06_day85 = cv.test_prob(
+    symp_prob=0.2,
+    asymp_prob=0.05,
+    start_day=CASE06_DAY85,
+    test_delay=2,
+    subtarget=_subtarget_position_a_case05,
+)
+mask_wearing_a_case06_day85 = MaskWearing(
+    start_day=CASE06_DAY85,
+    efficacy=0.5,
+    fraction=1.0,
+    subtarget={'inds': lambda sim: np.where(is_position_a(sim))[0]},
+)
+intervention_scenario_case06 = [
+    crosser_travel_case03,
+    crosser_travel_case04_resume,
+    inject_undocumented_case05,
+    domestic_mobility_case06,
+    mask_wearing_a_round1_2,
+    mask_wearing_b_phase2,
+    vaccinate_a_10k_round1_2_3,
+    vaccinate_b_5000,
+    test_isolate_a_case03_phase12_case05,
+    test_isolate_a_case04_phase3_case05,
+    test_isolate_crosser_case03_case05,
+    test_isolate_crosser_case04_phase4_case05,
+    test_isolate_a_case06_day85,
+    contact_tracing_50_case03_phase12,
+    contact_tracing_case04_phase3,
+    contact_tracing_case04_phase4,
+    mask_relax_a_case04,
+    mask_wearing_a_case06_day85,
 ]
 
 interventions = []  # 无干预
 # ==================场景模拟===========================
-interventions = intervention_scenario_case04  # A 区 50% 口罩 + 10000 剂疫苗 + 候鸟 50% 检测隔离(延迟1天)，B 区无政策
+interventions = intervention_scenario_case06  # A 区 50% 口罩 + 10000 剂疫苗 + 候鸟 50% 检测隔离(延迟1天)，B 区无政策
 
 sim = cv.Sim(
     pars=custom_pars,
@@ -421,7 +530,7 @@ sim.run()
 # 保存模拟结果与图片到指定目录（传完整路径，避免 sc.makefilepath 拼接时中文名被截成只剩 .sim）
 results_dir = r'myproject\results\双耦合网络图片\组合模拟'
 os.makedirs(results_dir, exist_ok=True)
-sim_basename = 'case04'
+sim_basename = 'case06'
 sim_path = os.path.join(results_dir, sim_basename + '.sim')
 sim.save(filename=sim_path)
 

@@ -287,6 +287,44 @@ class MaskRelax(cv.Intervention):
         self._applied = True
 
 
+# ========== 4c. 偷渡者注入：注入日向 A 区注入 n 个立即传染且不可检测的感染者 ==========
+class InjectUndocumentedInfectious(cv.Intervention):
+    '''在 inject_day 从 A 区易感者中选 n 人标记为偷渡者并感染，当日即传染；偷渡者不可被检测/隔离（需配合排除 undocumented 的 subtarget）。'''
+    def __init__(self, inject_day, n, region_key=None, region_name_a=None, **kwargs):
+        super().__init__(**kwargs)
+        self.inject_day = inject_day
+        self.n = int(n)
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
+        self._applied = False
+
+    def initialize(self, sim):
+        super().initialize()
+        self.inject_day = sim.day(self.inject_day)
+        if not hasattr(sim.people, 'undocumented'):
+            sim.people.undocumented = np.zeros(sim.n, dtype=bool)
+
+    def apply(self, sim):
+        if sim.t != self.inject_day or self._applied:
+            return
+        people = sim.people
+        position = getattr(people, self.region_key, None)
+        if position is None:
+            return
+        in_a = (np.asarray(position) == self.region_name_a)
+        candidates = np.where(in_a & people.susceptible)[0]
+        n_inject = min(self.n, len(candidates))
+        if n_inject <= 0:
+            self._applied = True
+            return
+        inds = np.random.choice(candidates, size=n_inject, replace=False)
+        people.undocumented[inds] = True
+        people.infect(inds, source=None, layer=None)
+        people.dur_exp2inf[inds] = 0
+        people.date_infectious[inds] = sim.t
+        self._applied = True
+
+
 # ========== 5. 两阶段口罩佩戴 ==========
 class MaskWearingTwoPhase(cv.Intervention):
     '''两阶段口罩佩戴：第一阶段 start_day_1 对 subtarget 的 fraction_1 比例生效，
