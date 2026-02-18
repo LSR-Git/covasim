@@ -1704,15 +1704,21 @@ class Layer(FlexDict):
 
     def __contains__(self, item):
         """
-        Check if a person is present in a layer
+        Check if a key is present (dict-like) or if a person index is in the layer.
 
         Args:
-            item: Person index
+            item: Key name (e.g. 'p1', 'beta') or person index
 
-        Returns: True if person index appears in any interactions
+        Returns: True if key exists or person index appears in any interactions
 
         """
-        return (item in self['p1']) or (item in self['p2'])
+        if super().__contains__(item):
+            return True
+        try:
+            idx = int(item)
+        except (TypeError, ValueError):
+            return False
+        return bool(np.any(self['p1'] == idx) or np.any(self['p2'] == idx))
 
     @property
     def members(self):

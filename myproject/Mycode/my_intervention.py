@@ -1,0 +1,284 @@
+# 政策/干预类：从 compose_intervention 迁移，供组合情景复用
+import numpy as np
+import covasim as cv
+import covasim.defaults as cvd
+
+
+# 默认区域键与名称（与 compose_intervention 中 _region_key / _region_name_a|b 一致）
+_region_key = 'position'
+_region_name_a = 'A'
+_region_name_b = 'B'
+
+
+# ========== 1. 接触者追踪：仅追踪指定区域 ==========
+class ContactTracingAOnly(cv.contact_tracing):
+    '''接触者追踪：只追踪 A 区的接触者（position=='A'），避免追踪到 B 区人员。'''
+    def __init__(self, region_key='position', region_name='A', **kwargs):
+        super().__init__(**kwargs)
+        self.region_key = region_key
+        self.region_name = region_name
+
+    def notify_contacts(self, sim, contacts):
+        '''只通知 A 区的接触者'''
+        is_dead = np.where(sim.people.dead)[0]  # 已死亡人员的索引
+        position = getattr(sim.people, self.region_key, None)
+        if position is None:
+            # 如果没有 position 属性，回退到原始行为
+            super().notify_contacts(sim, contacts)
+            return
+
+        is_in_a = (np.asarray(position) == self.region_name)
+        for trace_time, contact_inds in contacts.items():
+            contact_inds = np.setdiff1d(contact_inds, is_dead)  # 排除已死亡人员
+            # 只通知 A 区的接触者
+            contact_inds_a = contact_inds[is_in_a[contact_inds]]
+            if len(contact_inds_a) > 0:
+                sim.people.known_contact[contact_inds_a] = True
+                sim.people.date_known_contact[contact_inds_a] = np.fmin(
+                    sim.people.date_known_contact[contact_inds_a],
+                    sim.t + trace_time
+                )
+                sim.people.schedule_quarantine(
+                    contact_inds_a,
+                    start_date=sim.t + trace_time,
+                    period=self.quar_period - trace_time
+                )
+        return
+
+
+# ========== 2. 境内流动限制：仅指定区域 base 层减边 ==========
+class reduce_region_a_contacts(cv.Intervention):
+    '''对 A 区域（默认按 position）人员的 base 层接触边减少 50%，在 start_day 生效。'''
+    def __init__(self, start_day=10, region_key=None, region_name=None, fraction=0.5, **kwargs):
+        super().__init__(**kwargs)
+        self.start_day = start_day
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name = region_name if region_name is not None else _region_name_a
+        self.fraction = fraction
+        self._stored_contacts = None
+        self._applied = False
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+
+    def apply(self, sim):
+        if sim.t != self.start_day or self._applied:
+            return
+        if 'base' not in sim.people.contacts:
+            return
+        region = getattr(sim.people, self.region_key, None)
+        if region is None:
+            return
+        in_a = (region == self.region_name)
+        layer = sim.people.contacts['base']
+        p1, p2 = layer['p1'][:], layer['p2'][:]
+        edge_in_a = in_a[p1] | in_a[p2]
+        n_total = edge_in_a.sum()
+        if n_total == 0:
+            return
+        n_remove = int(n_total * (1 - self.fraction))
+        if n_remove <= 0:
+            return
+        inds_all = np.where(edge_in_a)[0]
+        np.random.shuffle(inds_all)
+        to_remove = inds_all[:n_remove]
+        self._stored_contacts = layer.pop_inds(to_remove)
+        self._applied = True
+
+
+# ========== 3. 候鸟动态跨境 ==========
+class CrosserTravel(cv.Intervention):
+    '''候鸟动态跨境：每日先让到期者回国，再从境内候鸟中按比例随机选人出境（境外停留 duration_min~duration_max 天）；
+    跨境时 cross 层权重有效、base 层权重 0，回国时 base 有效、cross 0。
+    end_day_outbound：若指定，该日及之后不再派出新出境人员，仅保留到期回国逻辑。'''
+    def __init__(
+        self,
+        frac_cross_per_day=0.1,
+        duration_min=1,
+        duration_max=7,
+        start_day=0,
+        end_day_outbound=None,
+        region_key=None,
+        region_name_a=None,
+        region_name_b=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.frac_cross_per_day = frac_cross_per_day
+        self.duration_min = int(duration_min)
+        self.duration_max = int(duration_max)
+        self.start_day = start_day
+        self.end_day_outbound = end_day_outbound
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
+        self.region_name_b = region_name_b if region_name_b is not None else _region_name_b
+        self._return_day = None
+        self._cross_beta = None
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+        if self.end_day_outbound is not None:
+            self.end_day_outbound = sim.day(self.end_day_outbound)
+        n = sim.n
+        self._return_day = np.full(n, np.nan, dtype=float)
+        self._cross_beta = float(sim['beta_layer'].get('cross', 1.0))
+        # 确保 base 层有 beta 数组（与 p1 等长），使用 Covasim 的默认浮点类型
+        if 'base' in sim.people.contacts:
+            layer = sim.people.contacts['base']
+            if 'beta' not in layer or len(layer['beta']) != len(layer['p1']):
+                layer['beta'] = np.ones(len(layer['p1']), dtype=cvd.default_float)
+
+    def apply(self, sim):
+        t = sim.t
+        people = sim.people
+        position = getattr(people, self.region_key, None)
+        country = getattr(people, 'country', None)
+        crosser = getattr(people, 'crosser', None)
+        if position is None or country is None or crosser is None:
+            return
+        return_day = self._return_day
+
+        # 1) 到期者回国（排除被隔离人员：quarantined 或 isolated 状态不能移动）
+        returning = crosser & (return_day == t) & ~people.quarantined & ~people.isolated
+        if np.any(returning):
+            position[returning] = country[returning]
+            return_day[returning] = np.nan
+
+        # 2) 从境内候鸟中按比例随机选人出境（仅从 start_day 开始；end_day_outbound 之后不再派出）
+        if t >= self.start_day and (self.end_day_outbound is None or t < self.end_day_outbound):
+            at_home = crosser & np.isnan(return_day) & ~people.quarantined & ~people.isolated
+            n_at_home = np.count_nonzero(at_home)
+            if n_at_home > 0 and self.frac_cross_per_day > 0:
+                n_go = max(0, int(n_at_home * self.frac_cross_per_day + 0.5))
+                n_go = min(n_go, n_at_home)
+                if n_go > 0:
+                    at_home_inds = np.where(at_home)[0]
+                    go_inds = np.random.choice(at_home_inds, size=n_go, replace=False)
+                    dur = np.random.randint(self.duration_min, self.duration_max + 1, size=len(go_inds))
+                    return_day[go_inds] = t + dur
+                    # 对方区域：A -> B, B -> A
+                    from_a = (np.asarray(country[go_inds]) == self.region_name_a)
+                    position[go_inds] = np.where(from_a, self.region_name_b, self.region_name_a)
+
+        # 3) 按 position 重算 base/cross 层 per-edge beta
+        is_abroad = (np.asarray(position) != np.asarray(country))
+        if 'base' in people.contacts:
+            layer = people.contacts['base']
+            p1, p2 = layer['p1'], layer['p2']
+            beta = layer['beta']
+            edge_abroad = is_abroad[p1] | is_abroad[p2]
+            beta[edge_abroad] = cvd.default_float(0.0)
+            beta[~edge_abroad] = cvd.default_float(1.0)
+        if 'cross' in people.contacts:
+            layer = people.contacts['cross']
+            p1, p2 = layer['p1'], layer['p2']
+            beta = layer['beta']
+            edge_abroad = is_abroad[p1] | is_abroad[p2]
+            beta[edge_abroad] = cvd.default_float(self._cross_beta)
+            beta[~edge_abroad] = cvd.default_float(0.0)
+
+
+# ========== 4. 口罩佩戴（单阶段） ==========
+class MaskWearing(cv.Intervention):
+    '''通过降低传染源的 rel_trans（相对传播力）表示戴口罩，传播性降为 efficacy（默认 0.7 即减少 30%）。
+    fraction：目标人群中佩戴口罩的比例（0~1），默认 1.0 表示全部佩戴。'''
+    def __init__(self, start_day=10, efficacy=0.7, fraction=1.0, subtarget=None, **kwargs):
+        super().__init__(**kwargs)
+        self.start_day = start_day
+        self.efficacy = efficacy
+        self.fraction = fraction
+        self.subtarget = subtarget
+        self._applied = False
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+
+    def apply(self, sim):
+        if sim.t != self.start_day or self._applied:
+            return
+        if self.subtarget is not None and 'inds' in self.subtarget:
+            inds = self.subtarget['inds'](sim)
+        else:
+            inds = np.arange(sim.n)
+        if len(inds) == 0:
+            return
+        if self.fraction >= 1.0:
+            wear_inds = inds
+        else:
+            n_wear = min(len(inds), int(len(inds) * self.fraction + 0.5))
+            wear_inds = np.random.choice(inds, size=n_wear, replace=False) if n_wear > 0 else np.array([], dtype=int)
+        if len(wear_inds) > 0:
+            sim.people.rel_trans[wear_inds] *= self.efficacy
+        self._applied = True
+
+
+# ========== 5. 两阶段口罩佩戴 ==========
+class MaskWearingTwoPhase(cv.Intervention):
+    '''两阶段口罩佩戴：第一阶段 start_day_1 对 subtarget 的 fraction_1 比例生效，
+    第二阶段 start_day_2 对 subtarget 中剩余的人（使总比例达到 fraction_2）生效。
+    通过降低传染源的 rel_trans（相对传播力）表示戴口罩，传播性降为 efficacy。
+
+    Args:
+        start_day_1: 第一阶段开始日期
+        start_day_2: 第二阶段开始日期
+        efficacy: 口罩效果（0~1），默认 0.5 表示传播性降为原来的 50%
+        fraction_1: 第一阶段目标人群中佩戴口罩的比例（0~1），默认 0.5
+        fraction_2: 第二阶段目标人群中佩戴口罩的总比例（0~1），默认 1.0
+        subtarget: 目标人群筛选条件，格式为 {'inds': lambda sim: ...}
+    '''
+    def __init__(self, start_day_1, start_day_2, efficacy=0.7, fraction_1=0.5, fraction_2=1.0, subtarget=None, **kwargs):
+        super().__init__(**kwargs)
+        self.start_day_1 = start_day_1
+        self.start_day_2 = start_day_2
+        self.efficacy = efficacy
+        self.fraction_1 = fraction_1
+        self.fraction_2 = fraction_2
+        self.subtarget = subtarget
+        self._wearing_inds = None  # 已在第一阶段戴口罩的人的索引集合
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day_1 = sim.day(self.start_day_1)
+        self.start_day_2 = sim.day(self.start_day_2)
+        self._wearing_inds = set()
+
+    def apply(self, sim):
+        if self.subtarget is not None and 'inds' in self.subtarget:
+            inds = np.array(self.subtarget['inds'](sim), dtype=int)
+        else:
+            inds = np.arange(sim.n)
+        if len(inds) == 0:
+            return
+
+        t = sim.t
+
+        # 第一阶段：在 start_day_1 对 fraction_1 比例的人应用口罩
+        if t == self.start_day_1:
+            n1 = min(len(inds), int(len(inds) * self.fraction_1 + 0.5))
+            if n1 > 0:
+                wear_1 = np.random.choice(inds, size=n1, replace=False)
+                if len(wear_1) > 0:
+                    sim.people.rel_trans[wear_1] *= self.efficacy
+                    self._wearing_inds = set(wear_1.tolist())
+
+        # 第二阶段：在 start_day_2 对剩余的人（使总比例达到 fraction_2）应用口罩
+        elif t == self.start_day_2:
+            # 计算第二阶段需要达到的总人数
+            n_total_target = min(len(inds), int(len(inds) * self.fraction_2 + 0.5))
+            # 计算还需要新增的人数
+            n_already_wearing = len(self._wearing_inds)
+            n_to_add = max(0, n_total_target - n_already_wearing)
+
+            if n_to_add > 0:
+                # 找出尚未戴口罩的人
+                remaining = inds[~np.isin(inds, list(self._wearing_inds))]
+                if len(remaining) > 0:
+                    # 从剩余的人中随机选择需要新增的人数
+                    n_select = min(n_to_add, len(remaining))
+                    wear_2 = np.random.choice(remaining, size=n_select, replace=False)
+                    if len(wear_2) > 0:
+                        sim.people.rel_trans[wear_2] *= self.efficacy
+                        self._wearing_inds.update(wear_2.tolist())
