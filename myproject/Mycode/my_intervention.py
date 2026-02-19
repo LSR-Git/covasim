@@ -218,6 +218,145 @@ class CrosserTravel(cv.Intervention):
             beta[~edge_abroad] = cvd.default_float(0.0)
 
 
+# ========== 3b. 候鸟动态跨境（多层网络专用） ==========
+class CrosserTravelMultilayer(cv.Intervention):
+    '''多层网络专用：候鸟跨境时原属地各层（home/school/work/community）权重冻结，
+    跨区层（cross_work/cross_community/cross_home）按 crosser_purpose 激活。
+    务工：cross_work+cross_community；探亲：cross_home+cross_community；偷渡：仅 cross_community。
+
+    使用前提：
+      - popdict 须由 CrossNetwork.add_cross_layer_multilayer 生成，含 crosser、crosser_purpose、position、country
+      - beta_layer 须包含 cross_work、cross_community、cross_home（如 0.6）
+
+    参数：
+      frac_cross_per_day: 每日出境候鸟占境内候鸟的比例（0~1），默认 0.1
+      duration_min, duration_max: 境外停留天数范围（含端点），默认 1~7
+      start_day: 开始出境的仿真日，默认 0
+      end_day_outbound: 停止新出境的仿真日，None 表示不限制
+      region_key: 位置属性名，默认 'position'
+      region_name_a, region_name_b: 两区名称，默认 'A'、'B'
+
+    示例：
+      from my_intervention import CrosserTravelMultilayer
+      popdict = CrossNetwork.add_cross_layer_multilayer(popdict, ...)
+      cv.Sim(pars={'beta_layer': {..., 'cross_work': 0.6, 'cross_community': 0.6, 'cross_home': 0.6}},
+             interventions=[CrosserTravelMultilayer(frac_cross_per_day=0.1, duration_min=1, duration_max=7)])
+    '''
+    def __init__(
+        self,
+        frac_cross_per_day=0.1,
+        duration_min=1,
+        duration_max=7,
+        start_day=0,
+        end_day_outbound=None,
+        region_key=None,
+        region_name_a=None,
+        region_name_b=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.frac_cross_per_day = frac_cross_per_day
+        self.duration_min = int(duration_min)
+        self.duration_max = int(duration_max)
+        self.start_day = start_day
+        self.end_day_outbound = end_day_outbound
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
+        self.region_name_b = region_name_b if region_name_b is not None else _region_name_b
+        self._return_day = None
+        self._cross_betas = {}
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+        if self.end_day_outbound is not None:
+            self.end_day_outbound = sim.day(self.end_day_outbound)
+        n = sim.n
+        self._return_day = np.full(n, np.nan, dtype=float)
+        for lkey in ['cross_work', 'cross_community', 'cross_home']:
+            if lkey in sim['beta_layer']:
+                self._cross_betas[lkey] = float(sim['beta_layer'][lkey])
+            else:
+                self._cross_betas[lkey] = 0.6
+        # 确保区内层有 beta 数组
+        for lkey in ['home', 'school', 'work', 'community']:
+            if lkey in sim.people.contacts:
+                layer = sim.people.contacts[lkey]
+                if 'beta' not in layer or len(layer['beta']) != len(layer['p1']):
+                    layer['beta'] = np.ones(len(layer['p1']), dtype=cvd.default_float)
+
+    def apply(self, sim):
+        t = sim.t
+        people = sim.people
+        position = getattr(people, self.region_key, None)
+        country = getattr(people, 'country', None)
+        crosser = getattr(people, 'crosser', None)
+        crosser_purpose = getattr(people, 'crosser_purpose', None)
+        if position is None or country is None or crosser is None:
+            return
+        return_day = self._return_day
+
+        # 1) 到期者回国
+        returning = crosser & (return_day == t) & ~people.quarantined & ~people.isolated
+        if np.any(returning):
+            position[returning] = country[returning]
+            return_day[returning] = np.nan
+
+        # 2) 从境内候鸟中按比例随机选人出境
+        if t >= self.start_day and (self.end_day_outbound is None or t < self.end_day_outbound):
+            at_home = crosser & np.isnan(return_day) & ~people.quarantined & ~people.isolated
+            n_at_home = np.count_nonzero(at_home)
+            if n_at_home > 0 and self.frac_cross_per_day > 0:
+                n_go = max(0, int(n_at_home * self.frac_cross_per_day + 0.5))
+                n_go = min(n_go, n_at_home)
+                if n_go > 0:
+                    at_home_inds = np.where(at_home)[0]
+                    go_inds = np.random.choice(at_home_inds, size=n_go, replace=False)
+                    dur = np.random.randint(self.duration_min, self.duration_max + 1, size=len(go_inds))
+                    return_day[go_inds] = t + dur
+                    from_a = (np.asarray(country[go_inds]) == self.region_name_a)
+                    position[go_inds] = np.where(from_a, self.region_name_b, self.region_name_a)
+
+        # 3) 原属地各层权重冻结
+        is_abroad = (np.asarray(position) != np.asarray(country))
+        for lkey in ['home', 'school', 'work', 'community']:
+            if lkey not in people.contacts:
+                continue
+            layer = people.contacts[lkey]
+            p1, p2 = layer['p1'], layer['p2']
+            beta = layer['beta']
+            edge_abroad = is_abroad[p1] | is_abroad[p2]
+            beta[edge_abroad] = cvd.default_float(0.0)
+            beta[~edge_abroad] = cvd.default_float(1.0)
+
+        # 4) 跨区层按 purpose 激活
+        if crosser_purpose is None:
+            crosser_purpose = np.empty(people.n, dtype=object)
+            crosser_purpose[:] = ''
+        purpose = np.asarray(crosser_purpose)
+
+        for lkey in ['cross_work', 'cross_community', 'cross_home']:
+            if lkey not in people.contacts:
+                continue
+            layer = people.contacts[lkey]
+            p1, p2 = layer['p1'], layer['p2']
+            beta = layer['beta']
+            cb = self._cross_betas.get(lkey, 0.6)
+            # 每条边一端为 crosser，判断该 crosser 是否 abroad 且符合 purpose
+            active = np.zeros(len(p1), dtype=bool)
+            for i in range(len(p1)):
+                c_ind = p1[i] if crosser[p1[i]] else p2[i]
+                if not is_abroad[c_ind]:
+                    continue
+                if lkey == 'cross_work' and purpose[c_ind] != 'work':
+                    continue
+                if lkey == 'cross_home' and purpose[c_ind] != 'visit':
+                    continue
+                active[i] = True
+            beta[active] = cvd.default_float(cb)
+            beta[~active] = cvd.default_float(0.0)
+
+
 # ========== 4. 口罩佩戴（单阶段） ==========
 class MaskWearing(cv.Intervention):
     '''通过降低传染源的 rel_trans（相对传播力）表示戴口罩，传播性降为 efficacy（默认 0.7 即减少 30%）。
