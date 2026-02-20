@@ -466,6 +466,161 @@ def plot_two_country_epidemic_curves(
     return fig
 
 
+def plot_layer_region_infections(
+    sim,
+    country_key='country',
+    regions=('A', 'B'),
+    layers=None,
+    show_regions=None,
+    figsize=(12, 10),
+    fontsize=10,
+    save_path=None,
+):
+    '''
+    按区域、按层绘制每日经由各层新发生的感染人数（来自 infection_log）。
+
+    使用前提：
+      sim 已运行完成，且 people.infection_log 有传播记录；people 须含 country_key 属性。
+
+    参数：
+      sim: 已运行的 Covasim Sim 对象
+      country_key: 人员区域属性名，默认 'country'
+      regions: 区域元组，默认 ('A', 'B')
+      layers: 要绘制的层列表。None 时取 sim.people.contacts 的 keys，排除 seed_infection、importation
+      show_regions: 显示区域。None 或 'both' 画两区；'A' 或 ('A',) 仅画 A 区；'B' 或 ('B',) 仅画 B 区
+      figsize: 图尺寸，默认 (12, 10)
+      fontsize: 字体大小，默认 10
+      save_path: 保存路径，None 则不保存
+
+    返回：
+      matplotlib Figure 对象
+
+    示例：
+      sim.run()
+      MyPlot.plot_layer_region_infections(
+          sim, regions=('A', 'B'),
+          layers=['home', 'school', 'work', 'community', 'cross_work', 'cross_community', 'cross_home'],
+          show_regions=('A', 'B'),
+          save_path='results/多层每层感染人数.png',
+      )
+    '''
+    if not _has_covasim:
+        raise RuntimeError('plot_layer_region_infections requires covasim')
+    plt.rcParams.setdefault('font.sans-serif', ['SimHei', 'Microsoft YaHei', 'SimSun', 'sans-serif'])
+    plt.rcParams.setdefault('axes.unicode_minus', False)
+
+    people = sim.people
+    infection_log = getattr(people, 'infection_log', [])
+    if not infection_log:
+        raise ValueError(
+            'infection_log 为空。若 sim 从文件加载，请确保保存时使用 keep_people=True（如 sim.save(keep_people=True)）；'
+            '若 sim 为新建，请先调用 sim.run() 再绘图。'
+        )
+
+    try:
+        country_arr = people[country_key]
+    except Exception:
+        raise ValueError(f'无法获取人员属性 {country_key}') from None
+
+    npts = int(sim.npts)
+    exclude_layers = {'seed_infection', 'importation'}
+
+    if layers is None:
+        try:
+            layer_keys = list(people.contacts.keys())
+        except Exception:
+            try:
+                layer_keys = list(sim['beta_layer'].keys())
+            except Exception:
+                layer_keys = []
+        layers = [lk for lk in layer_keys if lk not in exclude_layers]
+
+    if not layers:
+        raise ValueError('无可用层，请指定 layers 或确保 contacts/beta_layer 存在')
+
+    data = {}
+    for r in regions:
+        data[r] = {}
+        for lk in layers:
+            data[r][lk] = {'t': np.arange(npts, dtype=float), 'n_new_infections': np.zeros(npts, dtype=float)}
+
+    for entry in infection_log:
+        layer = entry.get('layer')
+        if layer not in layers:
+            continue
+        target = entry.get('target')
+        if target is None:
+            continue
+        try:
+            reg = country_arr[target]
+        except Exception:
+            continue
+        if reg not in regions:
+            continue
+        date_val = entry.get('date', 0)
+        t_idx = int(date_val)
+        if 0 <= t_idx < npts:
+            data[reg][layer]['n_new_infections'][t_idx] += 1
+
+    A, B = regions[0], regions[1]
+    if show_regions is None or show_regions == 'both' or show_regions == ('A', 'B'):
+        to_show = [A, B]
+    elif show_regions == 'A' or show_regions == (A,):
+        to_show = [A]
+    elif show_regions == 'B' or show_regions == (B,):
+        to_show = [B]
+    else:
+        to_show = list(show_regions)
+
+    n_rows = len(to_show)
+    w, h = (figsize[0], figsize[1]) if isinstance(figsize, (tuple, list)) and len(figsize) >= 2 else (12, 10)
+    if n_rows == 1:
+        fig, axes = plt.subplots(1, 1, figsize=(w * 0.6, h * 0.5))
+        axes = np.array([axes])
+    else:
+        fig, axes = plt.subplots(n_rows, 1, figsize=(w, h * 0.5 * n_rows))
+        axes = np.atleast_1d(axes)
+
+    # 区内层颜色；跨区层沿用对应原层颜色，线条用虚线
+    base_layer_colors = {
+        'home': '#4169e1', 'school': '#4dac26', 'work': '#e45226', 'community': '#9370db',
+    }
+    default_colors = ['#e67e50', '#32cd32', '#ff8c00', '#e996c6', '#87ceeb', '#8b0000']
+    layer_labels = {
+        'home': '家庭层', 'school': '学校层', 'work': '工作层', 'community': '社区层',
+        'cross_work': '跨区工作层', 'cross_community': '跨区社区层', 'cross_home': '跨区家庭层',
+    }
+    cross_to_base = {'cross_work': 'work', 'cross_community': 'community', 'cross_home': 'home'}
+
+    for i, reg in enumerate(to_show):
+        ax = axes[i] if n_rows > 1 else axes[0]
+        t = data[reg][layers[0]]['t']
+        def_col_idx = 0
+        for j, lk in enumerate(layers):
+            if lk in cross_to_base:
+                color = base_layer_colors.get(cross_to_base[lk], default_colors[def_col_idx % len(default_colors)])
+                linestyle = '--'
+            else:
+                color = base_layer_colors.get(lk, default_colors[def_col_idx % len(default_colors)])
+                linestyle = '-'
+                if lk not in base_layer_colors:
+                    def_col_idx += 1
+            label = layer_labels.get(lk, lk)
+            ax.plot(t, data[reg][lk]['n_new_infections'], color=color, label=label, linestyle=linestyle, marker='o', markersize=2, linewidth=1.0)
+        ax.set_xlabel('时间 (天)', fontsize=fontsize)
+        ax.set_ylabel('每日新感染人数', fontsize=fontsize)
+        ax.set_title(f'区域 {reg} 各层每日新感染人数', fontsize=fontsize)
+        ax.set_ylim(bottom=0)
+        ax.legend(loc='upper right', fontsize=fontsize - 1)
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.show()
+    return fig
+
+
 if __name__ == '__main__':
     # Minimal example: small graph with layer attribute (no dependency on cross_network)
     G = nx.MultiDiGraph()

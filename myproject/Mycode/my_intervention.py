@@ -357,6 +357,106 @@ class CrosserTravelMultilayer(cv.Intervention):
             beta[~active] = cvd.default_float(0.0)
 
 
+# ========== 3c. A 区居家办公（工作层减边） ==========
+class WorkFromHomeA(cv.Intervention):
+    '''仅对 A 区（position=A）人员的工作层移除 70% 接触边（保留 30%）。通过 layer.pop_inds 实际移除边，非修改 beta。'''
+    def __init__(self, start_day=0, end_day=None, region_key=None, region_name_a=None, fraction=0.3, seed=None, **kwargs):
+        super().__init__(**kwargs)
+        self.start_day = start_day
+        self.end_day = end_day
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
+        self.fraction = fraction
+        self.seed = seed
+        self._stored_contacts = None
+        self._applied = False
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+        if self.end_day is not None:
+            self.end_day = sim.day(self.end_day)
+
+    def apply(self, sim):
+        lkey = 'work'
+        if lkey not in sim.people.contacts:
+            return
+        layer = sim.people.contacts[lkey]
+        region = getattr(sim.people, self.region_key, None)
+        if region is None:
+            return
+        in_a = (np.asarray(region) == self.region_name_a)
+
+        if sim.t == self.start_day and not self._applied:
+            p1, p2 = layer['p1'][:], layer['p2'][:]
+            edge_in_a = in_a[p1] | in_a[p2]
+            n_total = edge_in_a.sum()
+            if n_total == 0:
+                return
+            n_remove = int(n_total * (1 - self.fraction))
+            if n_remove <= 0:
+                return
+            inds_all = np.where(edge_in_a)[0]
+            rng = np.random.RandomState(self.seed) if self.seed is not None else np.random
+            rng.shuffle(inds_all)
+            to_remove = inds_all[:n_remove]
+            self._stored_contacts = layer.pop_inds(to_remove)
+            self._applied = True
+        elif self.end_day is not None and sim.t == self.end_day and self._applied:
+            layer.append(self._stored_contacts)
+            self._applied = False
+
+
+# ========== 3d. A 区社区接触限制（社区层减边） ==========
+class CommunityRestrictA(cv.Intervention):
+    '''仅对 A 区（position=A）人员的社区层移除 50% 接触边（保留 50%）。通过 layer.pop_inds 实际移除边，非修改 beta。'''
+    def __init__(self, start_day=0, end_day=None, region_key=None, region_name_a=None, fraction=0.5, seed=None, **kwargs):
+        super().__init__(**kwargs)
+        self.start_day = start_day
+        self.end_day = end_day
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
+        self.fraction = fraction
+        self.seed = seed
+        self._stored_contacts = None
+        self._applied = False
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+        if self.end_day is not None:
+            self.end_day = sim.day(self.end_day)
+
+    def apply(self, sim):
+        lkey = 'community'
+        if lkey not in sim.people.contacts:
+            return
+        layer = sim.people.contacts[lkey]
+        region = getattr(sim.people, self.region_key, None)
+        if region is None:
+            return
+        in_a = (np.asarray(region) == self.region_name_a)
+
+        if sim.t == self.start_day and not self._applied:
+            p1, p2 = layer['p1'][:], layer['p2'][:]
+            edge_in_a = in_a[p1] | in_a[p2]
+            n_total = edge_in_a.sum()
+            if n_total == 0:
+                return
+            n_remove = int(n_total * (1 - self.fraction))
+            if n_remove <= 0:
+                return
+            inds_all = np.where(edge_in_a)[0]
+            rng = np.random.RandomState(self.seed) if self.seed is not None else np.random
+            rng.shuffle(inds_all)
+            to_remove = inds_all[:n_remove]
+            self._stored_contacts = layer.pop_inds(to_remove)
+            self._applied = True
+        elif self.end_day is not None and sim.t == self.end_day and self._applied:
+            layer.append(self._stored_contacts)
+            self._applied = False
+
+
 # ========== 4. 口罩佩戴（单阶段） ==========
 class MaskWearing(cv.Intervention):
     '''通过降低传染源的 rel_trans（相对传播力）表示戴口罩，传播性降为 efficacy（默认 0.7 即减少 30%）。

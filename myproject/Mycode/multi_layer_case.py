@@ -41,6 +41,8 @@ from my_intervention import (
     ScaleRegionBaseBetaByPhase,
     CrosserTravel,
     CrosserTravelMultilayer,
+    WorkFromHomeA,
+    CommunityRestrictA,
     MaskWearing,
     MaskWearingTwoPhase,
     MaskRelax,
@@ -146,7 +148,12 @@ crosser_travel_ml = CrosserTravelMultilayer(
     duration_max=7,
     start_day=0,
 )
-interventions = [crosser_travel_ml]
+# A 区居家办公（工作层移除 70% 边）+ 社区限制（社区层移除 50% 边），须在 CrosserTravelMultilayer 之后
+interventions = [
+    crosser_travel_ml,
+    WorkFromHomeA(start_day=0, fraction=0.3),
+    # CommunityRestrictA(start_day=0, fraction=0.5),
+]
 
 # ================== 4. 运行模拟 ==================
 sim = cv.Sim(
@@ -159,45 +166,19 @@ sim.popdict = popdict_base
 sim.reset_layer_pars(force=True)
 sim.initialize()
 sim.run()
-# sim.plot()
 
-# ================== 5. 验证：各层边数统计 ==================
-# 区内层应仅含 A/B 区内边（跨区=0）；跨区层应含 A-B 边（跨区>0）
-people = sim.people
-countries = people.country
-inds_A = np.where(countries == 'A')[0]
-inds_B = np.where(countries == 'B')[0]
+results_dir = r'myproject\results\多层耦合网络图片\居家办公干预'
+os.makedirs(results_dir, exist_ok=True)
+sim_basename = 'case01'
+sim_path = os.path.join(results_dir, sim_basename + '.sim')
+sim.save(filename=sim_path, keep_people=True)  # 保留 people 与 infection_log，供 plot_case 等后续绘图使用
 
-print("\n--- 区内层（应无跨区边）---")
-for lkey in ['community', 'work', 'school', 'home']:
-    layer = people.contacts[lkey]
-    p1, p2 = layer['p1'], layer['p2']
-    n_total = len(p1)
-    cross = (np.isin(p1, inds_A) & np.isin(p2, inds_B)) | (np.isin(p1, inds_B) & np.isin(p2, inds_A))
-    n_A = np.sum(np.isin(p1, inds_A) & np.isin(p2, inds_A))
-    n_B = np.sum(np.isin(p1, inds_B) & np.isin(p2, inds_B))
-    ok = "✓" if cross.sum() == 0 else "✗"
-    print(f"  {lkey}: 总边数={n_total}, A区内={n_A}, B区内={n_B}, 跨区={cross.sum()} {ok}")
-
-print("\n--- 跨区层（应有跨区边）---")
-for lkey in ['cross_work', 'cross_community', 'cross_home']:
-    if lkey not in people.contacts:
-        print(f"  {lkey}: 未创建（可能无对应候鸟）")
-        continue
-    layer = people.contacts[lkey]
-    p1, p2 = layer['p1'], layer['p2']
-    n_total = len(p1)
-    cross = (np.isin(p1, inds_A) & np.isin(p2, inds_B)) | (np.isin(p1, inds_B) & np.isin(p2, inds_A))
-    ok = "✓" if cross.sum() == n_total else "✗"
-    print(f"  {lkey}: 总边数={n_total}, 跨区边={cross.sum()} {ok}")
-
-# 候鸟统计
-crosser = getattr(people, 'crosser', None)
-if crosser is not None:
-    n_crosser = np.sum(crosser)
-    purpose = getattr(people, 'crosser_purpose', None)
-    if purpose is not None:
-        n_work = np.sum(np.asarray(purpose) == 'work')
-        n_visit = np.sum(np.asarray(purpose) == 'visit')
-        n_undoc = np.sum(np.asarray(purpose) == 'undocumented')
-        print(f"\n--- 候鸟统计 ---\n  总数={n_crosser}, 务工={n_work}, 探亲={n_visit}, 偷渡={n_undoc}")
+# 各层每日新感染人数（按区域、按传播层）
+MyPlot.plot_layer_region_infections(
+    sim,
+    country_key='country',
+    regions=('A', 'B'),
+    layers=['home', 'school', 'work', 'community'],
+    show_regions=('A'),
+    save_path=os.path.join(results_dir, sim_basename + '.png'),
+)
