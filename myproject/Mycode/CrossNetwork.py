@@ -172,6 +172,12 @@ def add_cross_layer_multilayer(
         crosser_purpose[tinds] = np.where(work_mask, 'work', np.where(visit_mask, 'visit', 'undocumented'))
     popdict['crosser_purpose'] = crosser_purpose
 
+    # undocumented: 偷渡候鸟标记，供 make_subtarget_crosser_exclude_undocumented 排除边境检测
+    popdict['undocumented'] = np.zeros(pop_size, dtype=bool)
+    for tinds in [travelers_A, travelers_B]:
+        undoc_mask = (crosser_purpose[tinds] == 'undocumented')
+        popdict['undocumented'][tinds[undoc_mask]] = True
+
     # 预建跨区层
     def make_cross_edges(crosser_inds, partner_inds, rng, n_per_person):
         p1_list, p2_list = [], []

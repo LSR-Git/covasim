@@ -572,13 +572,14 @@ def plot_layer_region_infections(
     else:
         to_show = list(show_regions)
 
-    n_rows = len(to_show)
+    n_show = len(to_show)
     w, h = (figsize[0], figsize[1]) if isinstance(figsize, (tuple, list)) and len(figsize) >= 2 else (12, 10)
-    if n_rows == 1:
+    if n_show == 1:
         fig, axes = plt.subplots(1, 1, figsize=(w * 0.6, h * 0.5))
         axes = np.array([axes])
     else:
-        fig, axes = plt.subplots(n_rows, 1, figsize=(w, h * 0.5 * n_rows))
+        # 两区时左右排列（1 行 n 列）
+        fig, axes = plt.subplots(1, n_show, figsize=(w * 0.5 * n_show, h * 0.5))
         axes = np.atleast_1d(axes)
 
     # 区内层颜色；跨区层沿用对应原层颜色，线条用虚线
@@ -593,7 +594,7 @@ def plot_layer_region_infections(
     cross_to_base = {'cross_work': 'work', 'cross_community': 'community', 'cross_home': 'home'}
 
     for i, reg in enumerate(to_show):
-        ax = axes[i] if n_rows > 1 else axes[0]
+        ax = axes[i] if n_show > 1 else axes[0]
         t = data[reg][layers[0]]['t']
         def_col_idx = 0
         for j, lk in enumerate(layers):

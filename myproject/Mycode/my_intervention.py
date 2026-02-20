@@ -233,6 +233,7 @@ class CrosserTravelMultilayer(cv.Intervention):
       duration_min, duration_max: 境外停留天数范围（含端点），默认 1~7
       start_day: 开始出境的仿真日，默认 0
       end_day_outbound: 停止新出境的仿真日，None 表示不限制
+      resume_day_outbound: 恢复新出境的仿真日，若设且 t>=resume 则忽略 end_day_outbound 恢复派出（用于严控→温和）
       region_key: 位置属性名，默认 'position'
       region_name_a, region_name_b: 两区名称，默认 'A'、'B'
 
@@ -249,6 +250,7 @@ class CrosserTravelMultilayer(cv.Intervention):
         duration_max=7,
         start_day=0,
         end_day_outbound=None,
+        resume_day_outbound=None,
         region_key=None,
         region_name_a=None,
         region_name_b=None,
@@ -260,6 +262,7 @@ class CrosserTravelMultilayer(cv.Intervention):
         self.duration_max = int(duration_max)
         self.start_day = start_day
         self.end_day_outbound = end_day_outbound
+        self.resume_day_outbound = resume_day_outbound
         self.region_key = region_key if region_key is not None else _region_key
         self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
         self.region_name_b = region_name_b if region_name_b is not None else _region_name_b
@@ -271,6 +274,8 @@ class CrosserTravelMultilayer(cv.Intervention):
         self.start_day = sim.day(self.start_day)
         if self.end_day_outbound is not None:
             self.end_day_outbound = sim.day(self.end_day_outbound)
+        if self.resume_day_outbound is not None:
+            self.resume_day_outbound = sim.day(self.resume_day_outbound)
         n = sim.n
         self._return_day = np.full(n, np.nan, dtype=float)
         for lkey in ['cross_work', 'cross_community', 'cross_home']:
@@ -303,7 +308,15 @@ class CrosserTravelMultilayer(cv.Intervention):
             return_day[returning] = np.nan
 
         # 2) 从境内候鸟中按比例随机选人出境
-        if t >= self.start_day and (self.end_day_outbound is None or t < self.end_day_outbound):
+        allow_outbound = (
+            t >= self.start_day
+            and (
+                self.end_day_outbound is None
+                or t < self.end_day_outbound
+                or (self.resume_day_outbound is not None and t >= self.resume_day_outbound)
+            )
+        )
+        if allow_outbound:
             at_home = crosser & np.isnan(return_day) & ~people.quarantined & ~people.isolated
             n_at_home = np.count_nonzero(at_home)
             if n_at_home > 0 and self.frac_cross_per_day > 0:
@@ -357,7 +370,60 @@ class CrosserTravelMultilayer(cv.Intervention):
             beta[~active] = cvd.default_float(0.0)
 
 
-# ========== 3c. A 区居家办公（工作层减边） ==========
+# ========== 3c. 多层级口罩佩戴（指定层、仅 A 区） ==========
+class MaskWearingLayerSpecific(cv.Intervention):
+    '''多层网络专用：在指定层（work、school）对涉及 A 区的 domestic 边，将 layer["beta"] 设为 efficacy。
+    须放在 CrosserTravelMultilayer 之后，因其每日重写 layer["beta"]，本干预在其后覆盖 domestic 边的值。
+    常规策略：工作层、学校层口罩佩戴，仅 A 区，100% 依从性。'''
+    def __init__(
+        self,
+        layers=None,
+        efficacy=0.5,
+        start_day=0,
+        end_day=None,
+        region_key=None,
+        region_name_a=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.layers = layers if layers is not None else ['work', 'school']
+        self.efficacy = cvd.default_float(efficacy)
+        self.start_day = start_day
+        self.end_day = end_day
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+        if self.end_day is not None:
+            self.end_day = sim.day(self.end_day)
+
+    def apply(self, sim):
+        if sim.t < self.start_day:
+            return
+        if self.end_day is not None and sim.t > self.end_day:
+            return
+        people = sim.people
+        position = getattr(people, self.region_key, None)
+        country = getattr(people, 'country', None)
+        if position is None or country is None:
+            return
+        in_a = (np.asarray(position) == self.region_name_a)
+        is_abroad = (np.asarray(position) != np.asarray(country))
+        for lkey in self.layers:
+            if lkey not in people.contacts:
+                continue
+            layer = people.contacts[lkey]
+            p1, p2 = layer['p1'], layer['p2']
+            beta = layer['beta']
+            edge_in_a = in_a[p1] | in_a[p2]
+            edge_abroad = is_abroad[p1] | is_abroad[p2]
+            domestic_in_a = edge_in_a & ~edge_abroad
+            beta[domestic_in_a] = self.efficacy
+
+
+# ========== 3e. A 区居家办公（工作层减边） ==========
 class WorkFromHomeA(cv.Intervention):
     '''仅对 A 区（position=A）人员的工作层移除 70% 接触边（保留 30%）。通过 layer.pop_inds 实际移除边，非修改 beta。'''
     def __init__(self, start_day=0, end_day=None, region_key=None, region_name_a=None, fraction=0.3, seed=None, **kwargs):
@@ -407,7 +473,52 @@ class WorkFromHomeA(cv.Intervention):
             self._applied = False
 
 
-# ========== 3d. A 区社区接触限制（社区层减边） ==========
+# ========== 3g. A 区学校停课（学校层减边） ==========
+class SchoolCloseA(cv.Intervention):
+    '''仅对 A 区（position=A）人员的学校层移除全部接触边（全面停学）。通过 layer.pop_inds 实际移除边。'''
+    def __init__(self, start_day=0, end_day=None, region_key=None, region_name_a=None, seed=None, **kwargs):
+        super().__init__(**kwargs)
+        self.start_day = start_day
+        self.end_day = end_day
+        self.region_key = region_key if region_key is not None else _region_key
+        self.region_name_a = region_name_a if region_name_a is not None else _region_name_a
+        self.seed = seed
+        self._stored_contacts = None
+        self._applied = False
+
+    def initialize(self, sim):
+        super().initialize()
+        self.start_day = sim.day(self.start_day)
+        if self.end_day is not None:
+            self.end_day = sim.day(self.end_day)
+
+    def apply(self, sim):
+        lkey = 'school'
+        if lkey not in sim.people.contacts:
+            return
+        layer = sim.people.contacts[lkey]
+        region = getattr(sim.people, self.region_key, None)
+        if region is None:
+            return
+        in_a = (np.asarray(region) == self.region_name_a)
+
+        if sim.t == self.start_day and not self._applied:
+            p1, p2 = layer['p1'][:], layer['p2'][:]
+            edge_in_a = in_a[p1] | in_a[p2]
+            n_total = edge_in_a.sum()
+            if n_total == 0:
+                return
+            inds_all = np.where(edge_in_a)[0]
+            rng = np.random.RandomState(self.seed) if self.seed is not None else np.random
+            rng.shuffle(inds_all)
+            self._stored_contacts = layer.pop_inds(inds_all)
+            self._applied = True
+        elif self.end_day is not None and sim.t == self.end_day and self._applied:
+            layer.append(self._stored_contacts)
+            self._applied = False
+
+
+# ========== 3h. A 区社区接触限制（社区层减边） ==========
 class CommunityRestrictA(cv.Intervention):
     '''仅对 A 区（position=A）人员的社区层移除 50% 接触边（保留 50%）。通过 layer.pop_inds 实际移除边，非修改 beta。'''
     def __init__(self, start_day=0, end_day=None, region_key=None, region_name_a=None, fraction=0.5, seed=None, **kwargs):
