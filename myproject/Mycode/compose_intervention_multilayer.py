@@ -492,12 +492,12 @@ intervention_scenario_case06 = [
 
 # ================== 场景切换 ==================
 interventions = []  # 无干预
-# interventions = intervention_scenario_case01  # 场景一：仅常规策略
+interventions = intervention_scenario_case01  # 场景一：仅常规策略
 # interventions = intervention_scenario_case02  # 场景二：常规 + 升级
 # interventions = intervention_scenario_case03  # 场景三：常规 + 升级 + 严控
 # interventions = intervention_scenario_case04  # 场景四：常规 + 升级 → round4 温和
 # interventions = intervention_scenario_case05  # 场景五：常规 + 升级 + 严控 → round4 温和（含低强度检测）
-interventions = intervention_scenario_case06  # 场景六：常规 + 升级 + 严控 → round4 温和（无境内检测，研究复发）
+# interventions = intervention_scenario_case06  # 场景六：常规 + 升级 + 严控 → round4 温和（无境内检测，研究复发）
 
 # ================== 6. 运行模拟 ==================
 sim = cv.Sim(
